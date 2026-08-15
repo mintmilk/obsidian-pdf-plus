@@ -2,7 +2,10 @@ blank_issues_enabled: false
 contact_links:
   - name: 'Questions'
     url: https://github.com/RyotaUshio/obsidian-pdf-plus/discussions
-    about: 'Ask questions or browse the past questions on GitHub Discussions.'
-  - name: 'Contribute to the docs'
-    url: https://github.com/RyotaUshio/obsidian-pdf-plus/tree/docs
-    about: 'Improve the documentation to help the community.'
+    about: "Ask questions on upstream PDF++'s Discussions — let's keep the community in one place."
+  - name: 'Upstream PDF++'
+    url: https://github.com/RyotaUshio/obsidian-pdf-plus
+    about: 'PDF++ CE is a maintenance fork. If your issue is not specific to CE, consider reporting it upstream too.'
+  - name: 'Documentation'
+    url: https://ryotaushio.github.io/obsidian-pdf-plus/
+    about: "Upstream's documentation applies to PDF++ CE as well."

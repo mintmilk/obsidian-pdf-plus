@@ -20,8 +20,10 @@ In each bug report on this repository, you will find a section called **PDF++ de
 2. Open the developer console, and run `pdfPlus.debugMode = true`.
 3. Now, a new command "PDF++: Load debug info" is available. Run it to load the user's settings.
 
-### Licensing & Revenue Considerations
+### Where to send your change
 
-This project might become a paid product in the future. If that happens, contributors might not receive a share of the revenue unless there’s a separate agreement. By contributing, you acknowledge and accept this.
+PDF++ CE is a maintenance fork of [PDF++](https://github.com/RyotaUshio/obsidian-pdf-plus) by [@RyotaUshio](https://github.com/RyotaUshio). If your change is not specific to this fork, **please open it upstream as well** — we would rather see fixes land in the original plugin than accumulate here. Everything merged into CE is offered upstream first.
 
-However, this does not exclude the possibility of revenue sharing through GitHub Sponsors or other means, at the discretion of the project owner (@RyotaUshio), for contributors who are deemed to have made significant contributions.
+### Licensing
+
+This fork is MIT, like the original, and has no plans to become a paid product. Contributions are accepted under the MIT license and this project does not solicit donations; the sponsor links point to the original author.

@@ -1,15 +1,15 @@
 {
-    "id": "pdf-plus",
-    "name": "PDF++",
-    "version": "0.40.31",
+    "id": "pdf-plus-ce",
+    "name": "PDF++ CE",
+    "version": "0.41.0",
     "minAppVersion": "1.5.8",
-    "description": "The most Obsidian-native PDF annotation tool ever.",
-    "author": "Ryota Ushio",
-    "authorUrl": "https://github.com/RyotaUshio",
+    "description": "Community-maintained continuation of PDF++, the most Obsidian-native PDF annotation tool.",
+    "author": "mintmilk (fork of PDF++ by Ryota Ushio)",
+    "authorUrl": "https://github.com/mintmilk/obsidian-pdf-plus",
     "fundingUrl": {
-        "GitHub Sponsor": "https://github.com/sponsors/RyotaUshio",
-        "Buy Me a Coffee": "https://www.buymeacoffee.com/ryotaushio",
-        "Ko-fi": "https://ko-fi.com/ryotaushio"
+        "GitHub Sponsor (original author)": "https://github.com/sponsors/RyotaUshio",
+        "Buy Me a Coffee (original author)": "https://www.buymeacoffee.com/ryotaushio",
+        "Ko-fi (original author)": "https://ko-fi.com/ryotaushio"
     },
     "isDesktopOnly": false
 }

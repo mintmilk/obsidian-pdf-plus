@@ -33,5 +33,5 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.payload.pull_request.number,
-              body: "⚠️ Your PR is missing acknowledgment of reading [CONTRIBUTING.md](https://github.com/RyotaUshio/obsidian-pdf-plus/blob/main/.github/CONTRIBUTING.md). Please check the corresponding box (`- [x]`) in the PR description and update your PR."
+              body: "⚠️ Your PR is missing acknowledgment of reading [CONTRIBUTING.md](https://github.com/mintmilk/obsidian-pdf-plus/blob/main/.github/CONTRIBUTING.md). Please check the corresponding box (`- [x]`) in the PR description and update your PR."
             })

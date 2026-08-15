@@ -1,12 +1,33 @@
-<h1 align="center">Obsidian PDF++</h1>
-<p align="center">
-<img src="https://img.shields.io/badge/dynamic/json?logo=obsidian&color=%238a5cf5&label=downloads&query=%24%5B%22pdf-plus%22%5D.downloads&url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsidianmd%2Fobsidian-releases%2Fmaster%2Fcommunity-plugin-stats.json" alt="Obsidian Downloads">
-</p>
+<h1 align="center">PDF++ CE</h1>
+<p align="center">Community Edition — a maintenance fork of <a href="https://github.com/RyotaUshio/obsidian-pdf-plus">PDF++</a> by <a href="https://github.com/RyotaUshio">Ryota Ushio</a>.</p>
 
-> [!note] 
-> I’m currently working on PDF++ v1.0.0. Because this release involves extensive refactoring, you probably won’t see any major updates for a few months—aside from minor bug fixes—until I can ship the 1.0.0 beta. But don’t worry: there’s a lot going on under the hood!
-> 
-> ⭐ Star this repo to show your support!
+> [!important]
+> **This is not the original PDF++.**
+>
+> Essentially all of the code here was written by [Ryota Ushio](https://github.com/RyotaUshio), who released it under the MIT license. Upstream has had no commits since **August 2025** while the author is busy with their PhD, so this fork exists to keep the plugin working against new Obsidian releases and to land bug fixes that would otherwise sit in the queue.
+>
+> This is a **friendly fork**, not a replacement. Fixes are offered upstream first, and if the original author resumes work, the intent is to merge back rather than compete. If you'd like to support the person who actually built this plugin, the sponsor links in the plugin's manifest point to them, not to us.
+
+## Differences from upstream PDF++
+
+Compared with upstream `0.40.31`:
+
+- **Backlink highlights no longer break text selection.** They used to take part in hit-testing, which meant a mousedown on a highlight gave the browser no caret position to anchor a selection to — selecting already-highlighted text often selected nothing or jumped by whole elements. They are now click-through, and the events they actually need (hover preview, double-click to open, context menu) are re-created by hit-testing the pointer position. Offered upstream as [RyotaUshio/obsidian-pdf-plus#571](https://github.com/RyotaUshio/obsidian-pdf-plus/pull/571).
+- As a side effect of the above, a hover preview no longer pops up in the middle of a text-selection drag.
+
+Everything else is upstream's, unchanged. The settings schema is identical, so `data.json` is compatible in both directions.
+
+## Migrating from PDF++
+
+The plugin id differs (`pdf-plus-ce` vs `pdf-plus`), so the two are separate installs and **must not be enabled at the same time** — both patch the same Obsidian internals and will conflict.
+
+1. Disable (or uninstall) the original PDF++.
+2. Install PDF++ CE.
+3. To keep your settings, copy `.obsidian/plugins/pdf-plus/data.json` to `.obsidian/plugins/pdf-plus-ce/data.json` and restart Obsidian.
+
+Your notes need no migration at all: PDF++ stores annotations as ordinary markdown links, so nothing in your vault is tied to either plugin's id.
+
+---
 
 This is an [Obsidian.md](https://obsidian.md) plugin for a better PDF experience. Specifically:
 
@@ -23,9 +44,9 @@ PDF++ stands out among other PDF annotation tools for the following reasons:
 - PDF++ does not introduce plugin-dependent syntaxes except for a few *optional* ones (`&color=...`/`&rect=...` link parameters).
 
 🚀 [Install](#installation)<br>
-📖 [Read the docs](https://ryotaushio.github.io/obsidian-pdf-plus/) (Note: it's still a work in progress!)<br>
-💬 [Ask & answer questions](https://github.com/RyotaUshio/obsidian-pdf-plus/discussions)<br>
-❗ [Report bugs](https://github.com/RyotaUshio/obsidian-pdf-plus/issues/new/choose) (Tip: when something is not working, first restart Obsidian by running the `Reload app without saving` command.)
+📖 [Read the docs](https://ryotaushio.github.io/obsidian-pdf-plus/) (upstream's docs; they apply to CE as well)<br>
+💬 [Ask & answer questions](https://github.com/RyotaUshio/obsidian-pdf-plus/discussions) (upstream discussions — please keep the community in one place)<br>
+❗ [Report bugs](https://github.com/mintmilk/obsidian-pdf-plus/issues/new/choose) (Tip: when something is not working, first restart Obsidian by running the `Reload app without saving` command.)
 
 > [!note]
 > - Some features require the [Style Settings](https://github.com/mgmeyers/obsidian-style-settings) plugin enabled.
@@ -399,16 +420,22 @@ Fortunately, it seems to be compatible with PDF++, meaning you can use features 
 
 ## Installation
 
-You can install this plugin from within Obsidian's community plugin browser.
-
-Alternatively, you can try the cutting-edge, latest beta release using [BRAT](https://github.com/TfTHacker/obsidian42-brat).
+PDF++ CE is not in Obsidian's community plugin browser (yet). Install it with [BRAT](https://github.com/TfTHacker/obsidian42-brat):
 
 1. Install the latest version of BRAT and enable it.
 2. _(Optional but highly recommended)_ In the BRAT settings, turn on `Auto-update plugins at startup` at the top of the page.
-3. Open the following URL in the browser: `obsidian://brat?plugin=RyotaUshio/obsidian-pdf-plus`.
+3. Open the following URL in the browser: `obsidian://brat?plugin=mintmilk/obsidian-pdf-plus`.
 4. Click the "Add Plugin" button.
 
+Or install manually: download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/mintmilk/obsidian-pdf-plus/releases/latest) into `<vault>/.obsidian/plugins/pdf-plus-ce/`, then reload Obsidian.
+
+Remember to disable the original PDF++ first — see [Migrating from PDF++](#migrating-from-pdf) above.
+
+The original plugin is still available in the community plugin browser as **PDF++**.
+
 ## Credits
+
+**PDF++ was created by [Ryota Ushio](https://github.com/RyotaUshio).** PDF++ CE is a maintenance fork and contributes only the changes listed at the top of this README; the design, the architecture and virtually all of the code are theirs.
 
 PDF++ is built on top of Obsidian's native PDF viewer powered by [Mozilla's PDF.js](https://mozilla.github.io/pdf.js/), which is already pretty good even without PDF++.
 Without the awesome work of the Obsidian team and the PDF.js maintainers, PDF++ would not have been possible.
@@ -443,7 +470,7 @@ The following plugin(s) alters Obsidian's internals in such a way that prevents 
 
 ## Support development
 
-If you find [my plugins](https://ryotaushio.github.io/the-hobbyist-dev/) useful, please support my work to ensure they continue to work!
+PDF++ CE does not accept donations. If this plugin is useful to you, support the person who wrote it — Ryota Ushio:
 
 <a href="https://github.com/sponsors/RyotaUshio" target="_blank"><img src="https://img.shields.io/static/v1?label=Sponsor&message=%E2%9D%A4&logo=GitHub&color=%23fe8e86" alt="GitHub Sponsors" style="width: 180px; height:auto;"></a>
 
