@@ -21,14 +21,22 @@ First Community Edition release. Based on upstream `0.40.31`.
 - Enabling the plugin with the Page preview core plugin turned off no longer throws while
   patching it.
 - Links to a text selection no longer record a range wider than what was selected.
-  `getOffsetInTextLayerNode()` located a range boundary by walking the text nodes and
-  comparing them against the boundary's container, but a boundary point can also sit on an
-  *element* — which is exactly what the browser produces when a selection ends on the seam
-  between two text layer nodes, or when text is selected by double-clicking. In that case
-  the comparison never matched, the walk ran to completion, and the function returned the
-  node's entire text length. Selecting `cis-h2` recorded `selection=228,0,231,40`, so the
-  highlight also covered the 40 characters that follow it. Boundaries are now measured with
-  a range, which handles both kinds of boundary point.
+  Selecting `cis-h²` in a paper recorded `selection=227,15,231,40` — 15 and 40 being the
+  full lengths of items 227 and 231, neither of which was selected — so the highlight
+  covered a chunk of surrounding text.
+
+  Two changes were needed. The offset helper located a range boundary by walking the text
+  nodes and comparing them against the boundary's container, which assumes the boundary
+  sits on a text node; it can just as well sit on an *element*, which is what the browser
+  produces when a selection ends on the seam between two text layer nodes (superscripts are
+  their own text item, so this is easy to hit) or when text is selected by double-clicking.
+  The comparison then never matched, the walk ran to completion, and the function returned
+  the node's entire text length. Boundaries are now measured with a range instead.
+
+  That alone changed nothing, because the helper wasn't the one being called: PDF++ only
+  overrode Obsidian's `getTextSelectionRangeStr` when the Obsidian version was exactly
+  `1.8.0`, so on every other version the link came from Obsidian's own implementation, which
+  contains the identical bug. The override is now applied unconditionally.
 - Backlink highlights no longer swallow `mousedown`, which broke text selection over
   already-highlighted text. The highlights are now click-through, and the events they need
   (hover preview, backlink pane highlighting, double-click to open, context menu) are
