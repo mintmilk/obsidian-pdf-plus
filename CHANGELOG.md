@@ -20,6 +20,15 @@ First Community Edition release. Based on upstream `0.40.31`.
   [#570](https://github.com/RyotaUshio/obsidian-pdf-plus/issues/570).
 - Enabling the plugin with the Page preview core plugin turned off no longer throws while
   patching it.
+- Links to a text selection no longer record a range wider than what was selected.
+  `getOffsetInTextLayerNode()` located a range boundary by walking the text nodes and
+  comparing them against the boundary's container, but a boundary point can also sit on an
+  *element* — which is exactly what the browser produces when a selection ends on the seam
+  between two text layer nodes, or when text is selected by double-clicking. In that case
+  the comparison never matched, the walk ran to completion, and the function returned the
+  node's entire text length. Selecting `cis-h2` recorded `selection=228,0,231,40`, so the
+  highlight also covered the 40 characters that follow it. Boundaries are now measured with
+  a range, which handles both kinds of boundary point.
 - Backlink highlights no longer swallow `mousedown`, which broke text selection over
   already-highlighted text. The highlights are now click-through, and the events they need
   (hover preview, backlink pane highlighting, double-click to open, context menu) are
