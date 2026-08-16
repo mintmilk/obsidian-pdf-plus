@@ -8,6 +8,40 @@ PDF++ CE continues the version numbering of upstream PDF++, which stopped at `0.
 
 First Community Edition release. Based on upstream `0.40.31`.
 
+### Added
+
+- **Lay the text layer out with the PDF's own fonts** (off by default, under Misc). The
+  invisible text layer you select is laid out with a generic family — `getTextContent`
+  reports `styles[fontName].fontFamily` as `font.fallbackName` — and only each item's total
+  width is corrected, with `scaleX`. That pins the two ends of a line fragment and lets
+  everything between them drift: on a page of a Nature paper by 5.72pt, close to a character
+  and a half, so that dragging across `74.1%` selects `4.1%)`. The link is self-consistent;
+  it just quotes text the pointer was never over.
+
+  PDF.js already installs each embedded font as an `@font-face` rule named after its loaded
+  name, which is exactly what a text item reports as its `fontName`. Naming that family on
+  the node lays the text out in the metrics the page was set in, and leaves the layer
+  otherwise untouched — one span, one text node, one line box. Placing the text directly
+  from the per-character boxes in `item.chars` measures better still and drags much worse,
+  because `.textLayer span { position: absolute }` is a descendant selector: any span added
+  inside a node is out of flow, and a dragged pointer needs a line box to walk.
+
+  Which font to use is measured, not assumed. A PDF.js font file is built to be drawn with
+  rather than to lay text out with, and one whose character map does not answer to the text
+  layer's characters makes things worse — an Elsevier paper's subset fonts left spaces and
+  digits with no advance at all. Each font's character widths are compared against the PDF's
+  own for the same text, and the PDF's font is used only where it is both under half a point
+  out and better than the generic family.
+
+  Mean drift 1.24pt → 0.21pt and mis-hitting characters 2093 → 32 on the Nature paper; the
+  Elsevier paper is left exactly as it was. No elements added, one to three milliseconds a
+  page. What it cannot correct is the spacing a PDF puts between individual glyphs to
+  justify a line, which lives in the content stream rather than in any font.
+  Offered upstream as [RyotaUshio/obsidian-pdf-plus#574](https://github.com/RyotaUshio/obsidian-pdf-plus/pull/574).
+- A debug command, "Report text layer alignment for this page", which measures the text
+  layer against the printed text with the option off and on. Every figure above comes from
+  it.
+
 ### Fixed
 
 - The settings tab is no longer cut short on Obsidian 1.13. Obsidian 1.13 renamed the
