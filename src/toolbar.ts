@@ -68,7 +68,7 @@ export class PDFPlusToolbar extends PDFPlusComponent {
                                 childMenu = null;
                             }
                         },
-                        component: this.child.component,
+                        component: this,
                         timeout: 200,
                     });
                 }

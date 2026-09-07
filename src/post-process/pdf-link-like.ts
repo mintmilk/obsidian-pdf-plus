@@ -1,4 +1,4 @@
-import { App, HoverParent, HoverPopover, Keymap } from 'obsidian';
+import { App, Component, HoverParent, HoverPopover, Keymap } from 'obsidian';
 
 import PDFPlus from 'main';
 import { PDFPlusLib } from 'lib';
@@ -23,6 +23,7 @@ abstract class PDFLinkLikePostProcessor implements HoverParent {
     lib: PDFPlusLib;
     child: PDFViewerChild;
     targetEl: HTMLElement;
+    private component: Component | undefined;
 
     static readonly HOVER_LINK_SOURCE_ID: string;
 
@@ -58,6 +59,7 @@ abstract class PDFLinkLikePostProcessor implements HoverParent {
         this.lib = plugin.lib;
         this.child = child;
         this.targetEl = targetEl;
+        this.component = child.component;
 
         if (this.useModifierKey()) this.registerClickToOpenInNewLeaf();
         if (this.shouldShowHoverPopover()) this.registerHover();
@@ -85,9 +87,9 @@ abstract class PDFLinkLikePostProcessor implements HoverParent {
     }
 
     private registerClickToOpenInNewLeaf() {
-        const { app, plugin, targetEl } = this;
+        const { app, targetEl } = this;
 
-        plugin.registerDomEvent(targetEl, 'click', async (event) => {
+        this.component?.registerDomEvent(targetEl, 'click', async (event) => {
             if (event.defaultPrevented) return;
 
             const newLeaf = Keymap.isModEvent(event);
@@ -97,6 +99,7 @@ abstract class PDFLinkLikePostProcessor implements HoverParent {
             event.stopPropagation(); // prevent the default click handler from being called
 
             const linktext = await this.getLinkText(event);
+            if (!this.isActive()) return;
             if (linktext === null) return;
 
             app.workspace.openLinkText(linktext, this.sourcePath, newLeaf);
@@ -108,10 +111,11 @@ abstract class PDFLinkLikePostProcessor implements HoverParent {
     }
 
     private registerHover() {
-        const { app, plugin, targetEl } = this;
+        const { app, targetEl } = this;
 
-        plugin.registerDomEvent(targetEl, 'mouseover', async (event) => {
+        this.component?.registerDomEvent(targetEl, 'mouseover', async (event) => {
             if (await this.customHover(event)) return;
+            if (!this.isActive()) return;
 
             let linktext: string | null = null;
             try {
@@ -123,7 +127,7 @@ abstract class PDFLinkLikePostProcessor implements HoverParent {
                 throw e;
             }
 
-            if (linktext === null) return;
+            if (!this.isActive() || linktext === null) return;
 
             app.workspace.trigger('hover-link', {
                 event,
@@ -137,11 +141,15 @@ abstract class PDFLinkLikePostProcessor implements HoverParent {
     }
 
     private registerClickToRecordHistory() {
-        const { plugin, targetEl } = this;
+        const { targetEl } = this;
 
-        plugin.registerDomEvent(targetEl, 'click', (evt) => {
+        this.component?.registerDomEvent(targetEl, 'click', (evt) => {
             this.recordLeafHistory();
         }, { capture: true });
+    }
+
+    private isActive() {
+        return !!this.component && this.child.component === this.component && !this.child.unloaded;
     }
 
     private recordLeafHistory() {

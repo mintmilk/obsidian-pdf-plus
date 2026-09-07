@@ -90,9 +90,15 @@ const patchPDFViewerComponent = (plugin: PDFPlus, pdfViewerComponent: PDFViewerC
                 const ret = await old.call(this, file, subpath);
 
                 this.then((child) => {
+                    const component = child.component;
+                    if (!component || child.unloaded || child.file !== file) return;
                     if (!this.visualizer || this.visualizer.file !== file) {
-                        this.visualizer?.unload();
-                        this.visualizer = this.addChild(PDFViewerBacklinkVisualizer.create(plugin, file, child));
+                        if (this.visualizer) component.removeChild(this.visualizer);
+                        const visualizer = component.addChild(PDFViewerBacklinkVisualizer.create(plugin, file, child));
+                        this.visualizer = visualizer;
+                        visualizer.register(() => {
+                            if (this.visualizer === visualizer) this.visualizer = undefined;
+                        });
                     }
                 });
 
@@ -122,6 +128,23 @@ const patchPDFViewerComponent = (plugin: PDFPlus, pdfViewerComponent: PDFViewerC
     }));
 };
 
+/** PDF++ resources must be released both when a viewer closes and when the plugin unloads. */
+const getPDFViewerChildComponent = (plugin: PDFPlus, child: PDFViewerChild): Component => {
+    if (!child.component) {
+        const component = new Component();
+        child.component = component;
+        component.register(() => {
+            if (child.component === component) child.component = undefined;
+            if (plugin.lastAnnotationPopupChild === child) plugin.lastAnnotationPopupChild = null;
+            for (const [el, viewerChild] of plugin.pdfViewerChildren) {
+                if (viewerChild === child) plugin.pdfViewerChildren.delete(el);
+            }
+        });
+        plugin.addChild(component);
+    }
+    return child.component;
+};
+
 const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
     const { app, lib } = plugin;
 
@@ -135,12 +158,12 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                 this.rectHighlight = null;
                 this.bib = null;
 
-                if (!this.component) {
-                    this.component = plugin.addChild(new Component());
-                }
-                this.component.load();
+                const component = getPDFViewerChildComponent(plugin, this);
+                component.load();
+                const isActive = () => this.component === component && !this.unloaded;
 
                 const ret = await old.call(this, ...args);
+                if (!isActive()) return ret;
 
                 const viewerContainerEl = this.pdfViewer?.dom?.viewerContainerEl;
                 if (viewerContainerEl) {
@@ -149,7 +172,7 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                         isModEvent ||= isModifierName(plugin.settings.showContextMenuOnMouseUpIf) && Keymap.isModifier(evt, plugin.settings.showContextMenuOnMouseUpIf);
                     };
 
-                    this.component.registerDomEvent(viewerContainerEl, 'pointerdown', (evt) => {
+                    component.registerDomEvent(viewerContainerEl, 'pointerdown', (evt) => {
                         lib.highlight.viewer.clearRectHighlight(this);
 
                         updateIsModEvent(evt);
@@ -157,7 +180,7 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                         // However, after then the auto-copy stopped working.
                         // Somehow mouseup event is not fired from within the PDF viewer anymore.
                         // I fixed it by listening to pointerup event instead of mouseup event.
-                        this.component?.registerDomEvent(viewerContainerEl, 'pointerup', onPointerUp);
+                        viewerContainerEl.addEventListener('pointerup', onPointerUp);
                     });
 
                     const doc = viewerContainerEl.doc;
@@ -238,32 +261,38 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                         viewerContainerEl.removeEventListener('pointerup', onPointerUp);
                         isModEvent = false;
                     };
+                    component.register(() => viewerContainerEl.removeEventListener('pointerup', onPointerUp));
                 }
 
+                let toolbar: PDFPlusToolbar | null = null;
+                let toolbarTimer: number | undefined;
+                let toolbarTimeout: number | undefined;
+                const clearToolbarTimers = () => {
+                    window.clearInterval(toolbarTimer);
+                    window.clearTimeout(toolbarTimeout);
+                };
+                const mountToolbar = () => {
+                    if (!isActive() || !this.toolbar) return;
+                    if (toolbar) plugin.domManager.removeChild(toolbar);
+                    toolbar = plugin.domManager.addChild(new PDFPlusToolbar(plugin, this.toolbar, this));
+                    clearToolbarTimers();
+                };
+                component.register(() => {
+                    clearToolbarTimers();
+                    if (toolbar) plugin.domManager.removeChild(toolbar);
+                    toolbar = null;
+                    this.palette = null;
+                });
                 const addColorPaletteToToolbar = () => {
+                    if (!isActive()) return;
+                    clearToolbarTimers();
                     try {
                         if (this.toolbar) {
-                            plugin.domManager.addChild(new PDFPlusToolbar(plugin, this.toolbar, this));
+                            mountToolbar();
                         } else {
                             // Should not happen, but just in case
-                            const timer = window.setInterval(() => {
-                                if (this.toolbar) {
-                                    plugin.domManager.addChild(new PDFPlusToolbar(plugin, this.toolbar, this));
-                                    window.clearInterval(timer);
-                                }
-                            }, 100);
-                            window.setTimeout(() => {
-                                window.clearInterval(timer);
-                            }, 1000);
-                        }
-
-                        const viewerContainerEl = this.pdfViewer?.dom?.viewerContainerEl;
-                        if (plugin.settings.autoHidePDFSidebar && viewerContainerEl) {
-                            if (!this.component) this.component = plugin.addChild(new Component());
-
-                            this.component.registerDomEvent(viewerContainerEl, 'click', () => {
-                                this.pdfViewer.pdfSidebar.switchView(SidebarView.NONE);
-                            });
+                            toolbarTimer = window.setInterval(mountToolbar, 100);
+                            toolbarTimeout = window.setTimeout(clearToolbarTimers, 1000);
                         }
                     } catch (e) {
                         new Notice(`${plugin.manifest.name}: An error occurred while mounting the color palette to the toolbar.`);
@@ -272,7 +301,13 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                 };
 
                 addColorPaletteToToolbar();
-                plugin.on('update-dom', addColorPaletteToToolbar);
+                component.registerEvent(plugin.on('update-dom', addColorPaletteToToolbar));
+
+                if (viewerContainerEl) {
+                    component.registerDomEvent(viewerContainerEl, 'click', () => {
+                        if (plugin.settings.autoHidePDFSidebar) this.pdfViewer.pdfSidebar.switchView(SidebarView.NONE);
+                    });
+                }
 
                 if (// Use !isMobile, not isDesktopApp, because in app.js, PDFViewerChild.onMobileCopy is called when isMobile is true.
                     !Platform.isMobile
@@ -281,21 +316,15 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                     // TypeError: Cannot read properties of null (reading 'eventBus')
                     && this.pdfViewer
                 ) {
-                    const eventBus = this.pdfViewer.eventBus;
-                    if (eventBus) {
-                        eventBus.on('textlayerrendered', ({ source: pageView }) => {
-                            const textLayerDiv = pageView?.textLayer?.div;
-                            if (textLayerDiv) {
-                                textLayerDiv.addEventListener('copy', onCopy);
-                            }
-                        });
-                    }
+                    // Copy bubbles from the text layer. Keep one listener on the persistent
+                    // container instead of retaining each text layer replaced by a re-render.
+                    if (viewerContainerEl) component.registerDomEvent(viewerContainerEl, 'copy', onCopy);
                 }
 
                 if (this.pdfViewer?.eventBus) {
                     // Experimental: re-position the text layer using the per-character boxes that
                     // Obsidian's PDF.js exposes, so that hit-testing matches the painted glyphs.
-                    this.pdfViewer.eventBus.on('textlayerrendered', ({ source: pageView }) => {
+                    lib.registerPDFEvent('textlayerrendered', this.pdfViewer.eventBus, component, ({ source: pageView }) => {
                         if (plugin.settings.useEmbeddedFontsInTextLayer) alignTextLayer(pageView, true);
                     });
                 }
@@ -318,14 +347,16 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
         },
         unload(old) {
             return function (this: PDFViewerChild) {
-                this.component?.unload();
+                const component = this.component;
+                this.component = undefined;
+                if (component) plugin.removeChild(component);
                 return old.call(this);
             };
         },
         onResize(old) {
             return function (this: PDFViewerChild) {
                 const pdfContainerEl = this.containerEl.querySelector<HTMLElement>('.pdf-container');
-                if (pdfContainerEl) {
+                if (pdfContainerEl && this.component && !this.unloaded) {
                     plugin.pdfViewerChildren.set(pdfContainerEl, this);
                 }
 
@@ -347,9 +378,8 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                     return;
                 }
 
-                if (!this.component) {
-                    this.component = plugin.addChild(new Component());
-                }
+                const component = getPDFViewerChildComponent(plugin, this);
+                const isActive = () => this.component === component && !this.unloaded;
 
                 // If the file is small enough, first check the text content.
                 // If it's a URL to a PDF located outside the vault, tell ObsidianViewer to use the URL instead of `app.vault.getResourcePath(file)` (which is called inside the original `loadFile` method)
@@ -360,13 +390,17 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
 
                 if (file.stat.size < 300) {
                     const redirectTo = await lib.getExternalPDFUrl(file);
+                    if (!isActive()) {
+                        if (redirectTo) URL.revokeObjectURL(redirectTo);
+                        return;
+                    }
                     if (redirectTo) {
+                        component.register(() => URL.revokeObjectURL(redirectTo));
                         const redirectFrom = app.vault.getResourcePath(file).replace(/\?\d+$/, '');
                         this.pdfViewer.pdfPlusRedirect = { from: redirectFrom, to: redirectTo };
 
                         await old.call(this, file, subpath);
-
-                        this.component.register(() => URL.revokeObjectURL(redirectTo));
+                        if (!isActive()) return;
 
                         externalFileLoaded = true;
                         this.isFileExternal = true;
@@ -384,18 +418,19 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                     this.externalFileUrl = null;
                     await old.call(this, file, subpath);
                 }
+                if (!isActive() || this.file !== file) return;
 
                 const pdfContainerEl = this.containerEl.querySelector<HTMLElement>('.pdf-container');
                 if (pdfContainerEl) {
                     plugin.pdfViewerChildren.set(pdfContainerEl, this);
                 }
 
-                this.bib?.unload();
-                this.bib = this.component.addChild(new BibliographyManager(plugin, this));
+                if (this.bib) component.removeChild(this.bib);
+                this.bib = component.addChild(new BibliographyManager(plugin, this));
 
                 // Register post-processors
 
-                lib.registerPDFEvent('annotationlayerrendered', this.pdfViewer.eventBus, this.component!, (data) => {
+                lib.registerPDFEvent('annotationlayerrendered', this.pdfViewer.eventBus, component, (data) => {
                     const { source: pageView } = data;
 
                     pageView.annotationLayer?.div
@@ -440,7 +475,7 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                                             this.destroyAnnotationPopup();
                                         }
                                     },
-                                    component: this.component,
+                                    component,
                                 });
                             }
 
@@ -449,7 +484,7 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                 });
 
                 lib.registerPDFEvent(
-                    'outlineloaded', this.pdfViewer.eventBus, null,
+                    'outlineloaded', this.pdfViewer.eventBus, component,
                     async (data: { source: PDFOutlineViewer, outlineCount: number, currentOutlineItemPromise: Promise<void> }) => {
                         const pdfOutlineViewer = data.source;
 
@@ -466,20 +501,21 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                         if (plugin.settings.outlineDrag) {
                             await registerOutlineDrag(plugin, pdfOutlineViewer, this, file);
                         }
+                        if (!isActive() || this.file !== file) return;
 
                         pdfOutlineViewer.allItems.forEach((item) => PDFOutlineItemPostProcessor.registerEvents(plugin, this, item));
 
                         if (plugin.settings.outlineContextMenu) {
-                            plugin.registerDomEvent(pdfOutlineViewer.childrenEl, 'contextmenu', (evt) => {
+                            component.registerDomEvent(pdfOutlineViewer.childrenEl, 'contextmenu', (evt) => {
                                 if (evt.target === evt.currentTarget) {
                                     onOutlineContextMenu(plugin, this, file, evt);
                                 }
                             });
                         }
-                    }
+                    }, { once: true }
                 );
 
-                lib.registerPDFEvent('thumbnailrendered', this.pdfViewer.eventBus, null, () => {
+                lib.registerPDFEvent('thumbnailrendered', this.pdfViewer.eventBus, component, () => {
                     const file = this.file;
                     if (!file) return;
                     if (plugin.settings.thumbnailDrag) {
@@ -487,14 +523,14 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                     }
 
                     PDFThumbnailItemPostProcessor.registerEvents(plugin, this);
-                });
+                }, { once: true });
 
                 if (plugin.settings.noSpreadModeInEmbed && !isNonEmbedLike(this.pdfViewer)) {
-                    lib.registerPDFEvent('pagerendered', this.pdfViewer.eventBus, null, () => {
+                    lib.registerPDFEvent('pagerendered', this.pdfViewer.eventBus, component, () => {
                         this.pdfViewer.eventBus.dispatch('switchspreadmode', {
                             mode: SpreadMode.NONE,
                         });
-                    });
+                    }, { once: true });
                 }
 
                 // Added in PDF++ 0.40.22
@@ -508,15 +544,15 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                 // and the `page-fit` behavior.
                 // To fix it, I had to force `page-width` for PDF embeds. 
                 if (isEmbed(this.pdfViewer)) {
-                    lib.registerPDFEvent('documentinit', this.pdfViewer.eventBus, null, () => {
+                    lib.registerPDFEvent('documentinit', this.pdfViewer.eventBus, component, () => {
                         this.pdfViewer.eventBus.dispatch('scalechanged', {
                             source: this.toolbar,
                             value: 'page-width',
                         });
-                    });
+                    }, { once: true });
                 }
 
-                lib.registerPDFEvent('sidebarviewchanged', this.pdfViewer.eventBus, null, (data) => {
+                lib.registerPDFEvent('sidebarviewchanged', this.pdfViewer.eventBus, component, (data) => {
                     const { source: pdfSidebar } = data;
                     if (plugin.settings.noSidebarInEmbed && !isNonEmbedLike(this.pdfViewer)) {
                         pdfSidebar.close();
@@ -524,14 +560,14 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                     if (plugin.settings.defaultSidebarView === SidebarView.OUTLINE && pdfSidebar.haveOutline) {
                         pdfSidebar.switchView(SidebarView.OUTLINE);
                     }
-                });
+                }, { once: true });
 
                 // For https://github.com/RyotaUshio/obsidian-view-sync
                 if (isNonEmbedLike(this.pdfViewer)) {
                     lib.registerPDFEvent(
                         'pagechanging',
                         this.pdfViewer.eventBus,
-                        this.component,
+                        component,
                         debounce(({ pageNumber }) => {
                             if (plugin.settings.viewSyncFollowPageNumber) {
                                 const view = lib.workspace.getActivePDFView();
@@ -891,16 +927,15 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                 if (plugin.settings.renderMarkdownInStickyNote && this.file) {
                     const contentEl = this.activeAnnotationPopupEl?.querySelector<HTMLElement>('.popupContent');
                     if (contentEl) {
+                        const component = this.component;
                         contentEl.textContent = '';
                         // we can use contentEl.textContent, but it has backslashes escaped
                         lib.highlight.writeFile.getAnnotationContents(this.file, page, id)
                             .then(async (markdown) => {
-                                if (!markdown) return;
+                                if (!markdown || !component || this.component !== component || this.unloaded) return;
                                 contentEl.addClass('markdown-rendered');
-                                if (!this.component) {
-                                    this.component = plugin.addChild(new Component());
-                                }
-                                await MarkdownRenderer.render(app, markdown, contentEl, '', this.component);
+                                await MarkdownRenderer.render(app, markdown, contentEl, '', component);
+                                if (this.component !== component || this.unloaded) return;
                                 hookInternalLinkMouseEventHandlers(app, contentEl, this.file?.path ?? '');
                             });
                     }

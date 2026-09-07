@@ -14,11 +14,14 @@ import { PDFOutlines } from 'lib/outlines';
 
 export const registerOutlineDrag = async (plugin: PDFPlus, pdfOutlineViewer: PDFOutlineViewer, child: PDFViewerChild, file: TFile) => {
     const { app, lib } = plugin;
+    const component = child.component;
+    const isActive = () => !!component && child.component === component && !child.unloaded && child.file === file;
     const promises: Promise<void>[] = [];
 
     for (const item of pdfOutlineViewer.allItems) {
         promises.push((async () => {
             const textGenerator = await lib.copyLink.getTextToCopyForOutlineItemDynamic(child, file, item);
+            if (!isActive()) return;
 
             const itemTitle = lib.toSingleLine(item.item.title);
             const title = itemTitle
@@ -81,6 +84,7 @@ export const registerOutlineDrag = async (plugin: PDFPlus, pdfOutlineViewer: PDF
     }
 
     await Promise.all(promises);
+    if (!isActive()) return;
 
     app.dragManager.handleDrop(pdfOutlineViewer.childrenEl, (evt, draggable, dragging) => {
         if (!lib.isEditable(child)) return;

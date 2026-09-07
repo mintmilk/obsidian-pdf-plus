@@ -83,6 +83,12 @@ export class BacklinkDomManager extends PDFPlusComponent {
         }
     }
 
+    onunload() {
+        this.clear();
+        this.pagewiseStatus.clear();
+        this.pagewiseOnClearDomCallbacksMap = new MultiValuedMap();
+    }
+
     getStatus(pageNumber: number) {
         let status = this.pagewiseStatus.get(pageNumber);
         if (!status) {
@@ -346,7 +352,7 @@ export class PDFViewerBacklinkVisualizer extends PDFBacklinkVisualizer implement
     }
 
     static create(plugin: PDFPlus, file: TFile, child: PDFViewerChild) {
-        return plugin.addChild(new PDFViewerBacklinkVisualizer(plugin, file, child));
+        return new PDFViewerBacklinkVisualizer(plugin, file, child);
     }
 
     get hoverPopover() {
