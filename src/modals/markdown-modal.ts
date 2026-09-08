@@ -14,6 +14,7 @@ export class MarkdownModal extends PDFPlusModal {
     }
 
     onOpen() {
+        super.onOpen();
         MarkdownRenderer.render(
             this.app,
             this.markdown,

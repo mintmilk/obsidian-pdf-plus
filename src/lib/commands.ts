@@ -1,4 +1,4 @@
-import { Command, MarkdownView, Notice, TFile, WorkspaceLeaf, normalizePath, setIcon } from 'obsidian';
+import { Component, Command, MarkdownView, Notice, TFile, WorkspaceLeaf, normalizePath, setIcon } from 'obsidian';
 
 import { PDFPlusLibSubmodule } from './submodule';
 import { PDFComposerModal, PDFCreateModal, PDFPageDeleteModal, PDFPageLabelEditModal, PDFOutlineTitleModal, DummyFileModal } from 'modals';
@@ -970,13 +970,21 @@ export class PDFPlusCommands extends PDFPlusLibSubmodule {
 
         // In the case of hover editor, we have to wait until the metadata is updated for the newly created file
         // because we need to resolve a link in `onLinkHover`.
-        const eventRef = this.app.metadataCache.on('resolve', async (resolvedFile) => {
+        if ((this.plugin as unknown as { _loaded: boolean })._loaded === false) return;
+        const owner = this.plugin.addChild(new Component());
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        owner.register(() => { if (timer !== undefined) clearTimeout(timer); });
+        const eventRef = this.app.metadataCache.on('resolve', (resolvedFile) => {
             if (resolvedFile === file) {
                 this.app.metadataCache.offref(eventRef);
-                // I don't understand why, but without setTimeout (or with a shorter timeout like 50 ms), the file is not opened.
-                setTimeout(() => openFile(), 100);
+                // Hover editor needs a short delay after metadata resolves the new file.
+                timer = setTimeout(() => {
+                    this.plugin.removeChild(owner);
+                    void openFile();
+                }, 100);
             }
         });
+        owner.registerEvent(eventRef);
     }
 
     extractHighlightedText(checking: boolean) {
@@ -994,9 +1002,12 @@ export class PDFPlusCommands extends PDFPlusLibSubmodule {
             let data = '';
 
             (async () => {
-                const doc = this.lib.getPDFDocument(true) ?? await this.lib.loadPDFDocument(file);
-
-                const highlights = await this.lib.highlight.extract.getAnnotatedTextsInDocument(doc);
+                const borrowedDocument = this.lib.getPDFDocument(true);
+                const doc = borrowedDocument ?? await this.lib.loadPDFDocument(file);
+                const highlights = await this.lib.highlight.extract.getAnnotatedTextsInDocument(doc)
+                    .finally(async () => {
+                        if (!borrowedDocument) await doc.destroy();
+                    });
 
                 highlights.forEach((resultsInPage, pageNumber) => {
                     resultsInPage.forEach(({ text, rgb, comment }, id) => {

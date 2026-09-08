@@ -1,5 +1,5 @@
 import { PDFPlusModal } from 'modals';
-import { normalizePath, Notice, Platform, Setting } from 'obsidian';
+import { Component, normalizePath, Notice, Platform, Setting } from 'obsidian';
 import { FuzzyFolderSuggest, getModifierNameInPlatform } from 'utils';
 
 
@@ -10,6 +10,7 @@ export class DummyFileModal extends PDFPlusModal {
     uris: string[] = [];
     // where to save the dummy files
     folderPath: string | null = null;
+    private displayComponent: Component | undefined;
 
     constructor(...args: ConstructorParameters<typeof PDFPlusModal>) {
         super(...args);
@@ -45,6 +46,8 @@ export class DummyFileModal extends PDFPlusModal {
     }
 
     display() {
+        if (this.displayComponent) this.component.removeChild(this.displayComponent);
+        this.displayComponent = this.component.addChild(new Component());
         if (Platform.isDesktopApp) {
             this.displayDesktop();
         } else {
@@ -111,10 +114,11 @@ export class DummyFileModal extends PDFPlusModal {
             .addText((text) => {
                 text.inputEl.size = 30;
                 text.setValue(this.folderPath ?? '');
-                new FuzzyFolderSuggest(this.app, text.inputEl)
+                const suggest = new FuzzyFolderSuggest(this.app, text.inputEl)
                     .onSelect(({ item: folder }) => {
                         this.folderPath = folder.path;
                     });
+                (this.displayComponent ?? this.component).register(() => suggest.close());
             });
     }
 

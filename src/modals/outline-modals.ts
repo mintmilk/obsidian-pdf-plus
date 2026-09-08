@@ -20,13 +20,6 @@ export class PDFOutlineTitleModal extends PDFPlusModal {
         super(plugin);
         this.modalTitle = modalTitle;
 
-        // Don't use `Scope` or `keydown` because they will cause the modal to be closed
-        // when hitting Enter with IME on
-        this.component.registerDomEvent(this.modalEl.doc, 'keypress', (evt) => {
-            if (evt.key === 'Enter') {
-                this.submitAndClose();
-            }
-        });
     }
 
     presetTitle(title: string) {
@@ -36,6 +29,10 @@ export class PDFOutlineTitleModal extends PDFPlusModal {
 
     onOpen() {
         super.onOpen();
+        // Keep the IME-safe keypress handler within this opening of the modal.
+        this.component.registerDomEvent(this.modalEl.doc, 'keypress', (evt) => {
+            if (evt.key === 'Enter') this.submitAndClose();
+        });
 
         this.titleEl.setText(`${this.plugin.manifest.name}: ${this.modalTitle}`);
 
@@ -88,8 +85,10 @@ export class PDFOutlineTitleModal extends PDFPlusModal {
     }
 
     onClose() {
+        super.onClose();
+        const callbacks = this.next.splice(0);
         if (this.submitted && this.title !== null) {
-            this.next.forEach((callback) => callback({ title: this.title! }));
+            callbacks.forEach((callback) => callback({ title: this.title! }));
         }
     }
 }

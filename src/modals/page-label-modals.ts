@@ -4,7 +4,7 @@ import { setTooltip } from 'obsidian';
  * 12.4.2, "Page Labels".
  */
 
-import { IconName, MarkdownRenderer, Notice, Setting, TFile, setIcon } from 'obsidian';
+import { Component, IconName, MarkdownRenderer, Notice, Setting, TFile, setIcon } from 'obsidian';
 import { PDFDocument } from '@cantoo/pdf-lib';
 
 import PDFPlus from 'main';
@@ -102,9 +102,11 @@ class PDFPageLabelSettingsForRange {
 
 export class PDFPageLabelEditModal extends PDFPageLabelModal {
     buttonSetting: Setting | null = null;
+    private displayComponent: Component | undefined;
 
     async onOpen() {
         super.onOpen();
+        const component = this.component;
 
         this.titleEl.setText(`${this.plugin.manifest.name}: edit page labels`);
         new Setting(this.contentEl)
@@ -128,6 +130,7 @@ export class PDFPageLabelEditModal extends PDFPageLabelModal {
         });
 
         await this.docLoadingPromise;
+        if (!this.isCurrentOpen(component)) return;
 
         this.display();
         this.addButtons();
@@ -142,6 +145,8 @@ export class PDFPageLabelEditModal extends PDFPageLabelModal {
         const { pageLabels, doc } = this;
         if (!doc) return;
 
+        if (this.displayComponent) this.component.removeChild(this.displayComponent);
+        this.displayComponent = this.component.addChild(new Component());
         this.controlEl.empty();
 
         if (pageLabels === null || pageLabels.rangeCount() === 0) {
@@ -270,13 +275,14 @@ export class PDFPageLabelEditModal extends PDFPageLabelModal {
             button.setIcon('lucide-message-square')
                 .setTooltip(`Hover${this.plugin.requireModKeyForLinkHover() ? ('+' + getModifierNameInPlatform('Mod').toLowerCase()) : ''} to preview`)
                 .then((button) => {
-                    this.component.registerDomEvent(button.extraSettingsEl, 'mouseover', (event) => {
+                    const component = this.displayComponent ?? this.component;
+                    component.registerDomEvent(button.extraSettingsEl, 'mouseover', (event) => {
                         this.app.workspace.trigger('hover-link', {
                             event,
                             source: 'pdf-plus',
                             linktext: this.file.path + `#page=${page}`,
                             targetEl: button.extraSettingsEl,
-                            hoverParent: this.component
+                            hoverParent: component
                         });
                     });
                 });

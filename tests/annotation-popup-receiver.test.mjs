@@ -5,6 +5,15 @@ import { runInNewContext } from 'node:vm';
 import { transform } from 'esbuild';
 import { around } from 'monkey-around';
 
+class Component {
+    _children = []; _events = [];
+    addChild(child) { this._children.push(child); return child; }
+    removeChild(child) { const i = this._children.indexOf(child); if (i >= 0) this._children.splice(i, 1); child.unload(); }
+    register(callback) { this._events.push(callback); }
+    registerDomEvent(el, type, callback) { el.addEventListener(type, callback); this.register(() => el.removeEventListener?.(type, callback)); }
+    unload() { this._events.splice(0).forEach(callback => callback()); this._children.splice(0).forEach(child => child.unload()); }
+}
+
 // Export the private patch installer only in the in-memory test module. Exercise
 // its real prototype wrapper, rather than reproducing the annotation logic.
 const source = await readFile(new URL('../src/patchers/pdf-internals.ts', import.meta.url), 'utf8');
@@ -15,7 +24,7 @@ runInNewContext(code, {
     exports: module.exports,
     require(name) {
         if (name === 'monkey-around') return { around };
-        if (name === 'obsidian') return { Platform: { isPhone: false }, setIcon() {}, setTooltip() {} };
+        if (name === 'obsidian') return { Component, Platform: { isPhone: false }, setIcon() {}, setTooltip() {} };
         return {};
     },
 });
@@ -47,6 +56,7 @@ for (const [firstEditable, currentEditable] of [[false, true], [true, false]]) {
         class ViewerChild {
             constructor(path, editable) {
                 this.file = { path };
+                this.component = new Component();
                 this.editable = editable;
                 this.popupMeta = new Element();
                 this.activeAnnotationPopupEl = { querySelector: () => this.popupMeta };

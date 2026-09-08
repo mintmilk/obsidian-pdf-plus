@@ -6,6 +6,9 @@ import { PDFPageView, PDFViewerChild, Rect } from 'typings';
 
 /** Adding text highlight in PDF viewers without writing into files */
 export class ViewerHighlightLib extends PDFPlusLibSubmodule {
+    private pendingHighlights = new WeakMap<PDFViewerChild, Component>();
+    private pendingRectScrolls = new WeakMap<PDFViewerChild, Component>();
+
     getPDFPlusBacklinkHighlightLayer(pageView: PDFPageView): HTMLElement {
         const pageDiv = pageView.div;
         return pageDiv.querySelector<HTMLElement>('div.pdf-plus-backlink-highlight-layer')
@@ -42,57 +45,68 @@ export class ViewerHighlightLib extends PDFPlusLibSubmodule {
      * @param duration The duration in seconds to highlight the subpath. If it's 0, the highlight will not be removed until the user clicks on the page.
      */
     highlightSubpath(child: PDFViewerChild, duration: number) {
-        if (child.subpathHighlight?.type === 'text') {
-            const component = new Component();
-            component.load();
+        const parent = child.component;
+        const previous = this.pendingHighlights.get(child);
+        if (previous) parent?.removeChild(previous);
+        const highlight = child.subpathHighlight;
+        if (!parent || child.unloaded || !highlight) return;
 
-            this.lib.onTextLayerReady(child.pdfViewer, component, (pageNumber) => {
-                if (child.subpathHighlight?.type !== 'text') return;
-                const { page, range } = child.subpathHighlight;
-                if (page !== pageNumber) return;
-
-                child.highlightText(page, range);
-                if (duration > 0) {
-                    setTimeout(() => {
-                        child.clearTextHighlight();
-                    }, duration * 1000);
+        const owner = parent.addChild(new Component());
+        this.pendingHighlights.set(child, owner);
+        owner.register(() => {
+            if (this.pendingHighlights.get(child) === owner) this.pendingHighlights.delete(child);
+        });
+        const waiting = owner.addChild(new Component());
+        const timerWindow = activeWindow;
+        const finish = () => parent.removeChild(owner);
+        let registering = true;
+        let ready = false;
+        let handled = false;
+        const onReady = (pageNumber: number) => {
+            if (handled) return;
+            if (child.unloaded || child.subpathHighlight !== highlight) { finish(); return; }
+            if (pageNumber !== highlight.page) return;
+            if (highlight.type === 'rect' && !child.getPage(pageNumber)?.div.dataset.loaded) return;
+            // The readiness helpers visit existing pages before installing their
+            // event listener. Defer disposal until that installation has finished.
+            if (registering) { ready = true; return; }
+            handled = true;
+            owner.removeChild(waiting);
+            try {
+                let clear: () => void;
+                if (highlight.type === 'text') {
+                    child.highlightText(highlight.page, highlight.range);
+                    clear = () => child.clearTextHighlight();
+                } else if (highlight.type === 'annotation') {
+                    child.highlightAnnotation(highlight.page, highlight.id);
+                    clear = () => child.clearAnnotationHighlight();
+                } else {
+                    this.highlightRect(child, highlight.page, highlight.rect);
+                    clear = () => this.clearRectHighlight(child);
                 }
-
-                component.unload();
-            });
-        } else if (child.subpathHighlight?.type === 'annotation') {
-            const component = new Component();
-            component.load();
-
-            this.lib.onAnnotationLayerReady(child.pdfViewer, component, (pageNumber) => {
-                if (child.subpathHighlight?.type !== 'annotation') return;
-                const { page, id } = child.subpathHighlight;
-                if (page !== pageNumber) return;
-
-                child.highlightAnnotation(page, id);
-                if (duration > 0) setTimeout(() => child.clearAnnotationHighlight(), duration * 1000);
-
-                component.unload();
-            });
-        } else if (child.subpathHighlight?.type === 'rect') {
-            const component = new Component();
-            component.load();
-
-            this.lib.onPageReady(child.pdfViewer, component, (pageNumber) => {
-                if (child.subpathHighlight?.type !== 'rect') return;
-
-                const { page, rect } = child.subpathHighlight;
-                if (page !== pageNumber) return;
-
-                this.highlightRect(child, page, rect);
-                if (duration > 0) {
-                    setTimeout(() => {
-                        this.clearRectHighlight(child);
+                if (duration > 0 && !child.unloaded) {
+                    const timeout = timerWindow.setTimeout(() => {
+                        finish();
+                        if (!child.unloaded && child.subpathHighlight === highlight) clear();
                     }, duration * 1000);
+                    owner.register(() => timerWindow.clearTimeout(timeout));
+                } else {
+                    finish();
                 }
-
-                component.unload();
-            });
+            } catch (error) {
+                finish();
+                throw error;
+            }
+        };
+        try {
+            if (highlight.type === 'text') this.lib.onTextLayerReady(child.pdfViewer, waiting, onReady);
+            else if (highlight.type === 'annotation') this.lib.onAnnotationLayerReady(child.pdfViewer, waiting, onReady);
+            else this.lib.onPageReady(child.pdfViewer, waiting, onReady);
+            registering = false;
+            if (ready) onReady(highlight.page);
+        } catch (error) {
+            finish();
+            throw error;
         }
     }
 
@@ -111,11 +125,22 @@ export class ViewerHighlightLib extends PDFPlusLibSubmodule {
 
                 // If `zoomToFitRect === true`, it will be handled by `PDFViewerChild.prototype.applySubpath` as a FitR destination.
                 if (!this.settings.zoomToFitRect) {
-                    activeWindow.setTimeout(() => {
-                        window.pdfjsViewer.scrollIntoView(child.rectHighlight, {
-                            top: - this.settings.embedMargin
-                        });
-                    });    
+                    const parent = child.component;
+                    if (!parent || child.unloaded) return;
+                    const owner = parent.addChild(new Component());
+                    const highlight = child.rectHighlight;
+                    const timerWindow = activeWindow;
+                    this.pendingRectScrolls.set(child, owner);
+                    const timeout = timerWindow.setTimeout(() => {
+                        parent.removeChild(owner);
+                        if (!child.unloaded && child.rectHighlight === highlight) {
+                            window.pdfjsViewer.scrollIntoView(highlight, { top: - this.settings.embedMargin });
+                        }
+                    });
+                    owner.register(() => {
+                        timerWindow.clearTimeout(timeout);
+                        if (this.pendingRectScrolls.get(child) === owner) this.pendingRectScrolls.delete(child);
+                    });
                 }
             }
         }
@@ -126,6 +151,8 @@ export class ViewerHighlightLib extends PDFPlusLibSubmodule {
      * for rectangular selections.
      */
     clearRectHighlight(child: PDFViewerChild) {
+        const pending = this.pendingRectScrolls.get(child);
+        if (pending) child.component?.removeChild(pending);
         if (child.rectHighlight) {
             child.rectHighlight.detach();
             child.rectHighlight = null;

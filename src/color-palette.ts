@@ -1,4 +1,4 @@
-import { Menu, Notice, Platform, setIcon, setTooltip } from 'obsidian';
+import { Component, Menu, Notice, Platform, setIcon, setTooltip } from 'obsidian';
 
 import PDFPlus from 'main';
 import { KeysOfType, getEventCoords, isHexString, showMenuUnderParentEl, isTargetHTMLElement } from 'utils';
@@ -27,6 +27,9 @@ export class ColorPalette extends PDFPlusComponent {
     statusContainerEl: HTMLElement | null;
     statusEl: HTMLElement | null;
     importButtonEl: HTMLElement | null;
+    private selectionComponent: Component | undefined;
+    private statusTimer: ReturnType<typeof setTimeout> | undefined;
+    private shownMenus = new Set<Menu>();
 
     /** The state of a color palette is specified by a 4-tuple consisting of the following. */
     selectedColorName: string | null;
@@ -95,6 +98,10 @@ export class ColorPalette extends PDFPlusComponent {
     }
 
     onunload() {
+        clearTimeout(this.statusTimer);
+        this.statusTimer = undefined;
+        for (const menu of this.shownMenus) menu.hide();
+        this.shownMenus.clear();
         this.spacerEl?.remove();
         if (this.paletteEl) {
             this.paletteEl.remove();
@@ -134,9 +141,10 @@ export class ColorPalette extends PDFPlusComponent {
                 });
             menu.onHide(() => {
                 shown = false;
+                this.shownMenus.delete(menu);
             });
 
-            showMenuUnderParentEl(menu, itemEl);
+            this.showOwnedMenu(menu, itemEl);
             shown = true;
         });
     }
@@ -205,9 +213,10 @@ export class ColorPalette extends PDFPlusComponent {
 
                 menu.onHide(() => {
                     shown = false;
+                    this.shownMenus.delete(menu);
                 });
 
-                showMenuUnderParentEl(menu, buttonEl);
+                this.showOwnedMenu(menu, buttonEl);
                 shown = true;
             });
         });
@@ -313,9 +322,10 @@ export class ColorPalette extends PDFPlusComponent {
                         });
                     menu.onHide(() => {
                         shown = false;
+                        this.shownMenus.delete(menu);
                     });
 
-                    showMenuUnderParentEl(menu, el);
+                    this.showOwnedMenu(menu, el);
                     shown = true;
                     return;
                 }
@@ -353,9 +363,10 @@ export class ColorPalette extends PDFPlusComponent {
                 });
                 menu.onHide(() => {
                     shown = false;
+                    this.shownMenus.delete(menu);
                 });
 
-                showMenuUnderParentEl(menu, el);
+                this.showOwnedMenu(menu, el);
                 shown = true;
             });
         });
@@ -448,15 +459,25 @@ export class ColorPalette extends PDFPlusComponent {
                     });
                 menu.onHide(() => {
                     shown = false;
+                    this.shownMenus.delete(menu);
                 });
 
-                showMenuUnderParentEl(menu, el);
+                this.showOwnedMenu(menu, el);
                 shown = true;
             });
         });
     }
 
+    private showOwnedMenu(menu: Menu, parentEl: HTMLElement) {
+        this.shownMenus.add(menu);
+        showMenuUnderParentEl(menu, parentEl);
+    }
+
     startRectangularSelection(autoPaste: boolean) {
+        if (this.selectionComponent) {
+            this.removeChild(this.selectionComponent);
+            return;
+        }
         const cropButtonEl = this.cropButtonEl;
         if (!cropButtonEl) return;
 
@@ -464,6 +485,15 @@ export class ColorPalette extends PDFPlusComponent {
         if (!child.pdfViewer.dom?.viewerEl) return;
 
         const viewerEl = child.pdfViewer.dom.viewerEl;
+        const component = this.addChild(new Component());
+        this.selectionComponent = component;
+        let dragComponent: Component | undefined;
+        const finish = () => this.removeChild(component);
+        component.register(() => {
+            if (this.selectionComponent === component) this.selectionComponent = undefined;
+            cropButtonEl.removeClass('is-active');
+            viewerEl.removeClass('pdf-plus-selecting');
+        });
 
         const selectBox = { left: 0, top: 0, width: 0, height: 0 };
         const onPointerDown = (evt: PointerEvent | TouchEvent) => {
@@ -477,6 +507,9 @@ export class ColorPalette extends PDFPlusComponent {
             if (!pageNumber) return;
 
             const pageView = child.getPage(+pageNumber);
+            if (dragComponent) component.removeChild(dragComponent);
+            const drag = component.addChild(new Component());
+            dragComponent = drag;
 
             // Compute the top-left corner of the selection box
             const { x, y } = getEventCoords(evt);
@@ -485,6 +518,7 @@ export class ColorPalette extends PDFPlusComponent {
 
             // Display the selection box
             const boxEl = pageEl.createDiv('pdf-plus-select-box');
+            drag.register(() => boxEl.remove());
             const pageRect = pageEl.getBoundingClientRect(); // includes border width & padding
             const style = getComputedStyle(pageEl);
             const borderTop = parseFloat(style.borderTopWidth);
@@ -522,10 +556,8 @@ export class ColorPalette extends PDFPlusComponent {
             };
 
             const onPointerUp = () => {
-                pageEl.removeEventListener('pointermove', onPointerMove);
-                pageEl.removeEventListener('touchmove', onTouchMove);
-                pageEl.removeEventListener('pointerup', onPointerUp);
-                pageEl.removeChild(boxEl);
+                component.removeChild(drag);
+                if (dragComponent === drag) dragComponent = undefined;
 
                 // Discard empty selections
                 if (selectBox.height <= 0 || selectBox.width <= 0) return;
@@ -550,50 +582,38 @@ export class ColorPalette extends PDFPlusComponent {
                         : undefined,
                     autoPaste
                 );
-                toggle();
+                finish();
             };
 
             // `pageEl` is not a part of this component, so just `pageEl.addEventListener` & `pageEl.removeEventListener`is not enough.
             // We have to explicitly remove the event listeners not just when the selection is done, but also
             // when this component gets unloaded.
-            this.registerDomEvent(pageEl, 'pointermove', onPointerMove);
-            this.registerDomEvent(pageEl, 'touchmove', onTouchMove);
-            this.registerDomEvent(pageEl, 'pointerup', onPointerUp);
+            drag.registerDomEvent(pageEl, 'pointermove', onPointerMove);
+            drag.registerDomEvent(pageEl, 'touchmove', onTouchMove);
+            drag.registerDomEvent(pageEl, 'pointerup', onPointerUp);
         };
 
         const onKeyDown = (evt: KeyboardEvent) => {
             if (evt.key === 'Escape') {
-                toggle();
+                finish();
             }
         };
 
-        const toggle = () => {
-            cropButtonEl.toggleClass('is-active', !cropButtonEl.hasClass('is-active'));
-            viewerEl.toggleClass('pdf-plus-selecting', cropButtonEl.hasClass('is-active'));
-            this.register(() => viewerEl.removeClass('pdf-plus-selecting'));
-
-            activeWindow.getSelection()?.empty();
-
-            if (cropButtonEl.hasClass('is-active')) {
-                // `viewerEl` is not a part of this component, so just `viewerEl.addEventListener` & `viewerEl.removeEventListener`is not enough.
-                // We have to explicitly remove the event listeners not just when the selection is done, but also
-                // when this component gets unloaded.
-                this.registerDomEvent(viewerEl, 'pointerdown', onPointerDown);
-                this.registerDomEvent(viewerEl.doc, 'keydown', onKeyDown);
-            } else {
-                viewerEl.removeEventListener('pointerdown', onPointerDown);
-                viewerEl.doc.removeEventListener('keydown', onKeyDown);
-            }
-        };
-
-        toggle();
+        cropButtonEl.addClass('is-active');
+        viewerEl.addClass('pdf-plus-selecting');
+        viewerEl.win.getSelection()?.empty();
+        component.registerDomEvent(viewerEl, 'pointerdown', onPointerDown);
+        component.registerDomEvent(viewerEl.doc, 'keydown', onKeyDown);
     }
 
     setStatus(text: string, durationMs: number) {
+        clearTimeout(this.statusTimer);
+        this.statusTimer = undefined;
         if (this.plugin.settings.showStatusInToolbar && this.statusEl) {
             this.statusEl.setText(text);
             if (durationMs > 0) {
-                setTimeout(() => {
+                this.statusTimer = setTimeout(() => {
+                    this.statusTimer = undefined;
                     if (this.statusEl?.getText() === text) {
                         this.statusEl.setText('');
                     }

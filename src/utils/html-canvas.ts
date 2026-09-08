@@ -3,12 +3,17 @@ export function cropCanvas(srcCanvas: HTMLCanvasElement, crop: { left: number, t
     const dstCanvas = createEl('canvas');
     dstCanvas.width = output.width;
     dstCanvas.height = output.height;
-    dstCanvas.getContext('2d')!.drawImage(
-        srcCanvas,
-        crop.left, crop.top, crop.width, crop.height,
-        0, 0, output.width, output.height
-    );
-    return dstCanvas;
+    try {
+        dstCanvas.getContext('2d')!.drawImage(
+            srcCanvas,
+            crop.left, crop.top, crop.width, crop.height,
+            0, 0, output.width, output.height
+        );
+        return dstCanvas;
+    } catch (error) {
+        dstCanvas.width = dstCanvas.height = 0;
+        throw error;
+    }
 }
 
 /**
@@ -24,17 +29,22 @@ export function rotateCanvas(srcCanvas: HTMLCanvasElement, rotate: number) {
     if (!rotate) return srcCanvas;
 
     const dstCanvas = createEl('canvas');
-    const ctx = dstCanvas.getContext('2d')!;
-    if (rotate === 90 || rotate === 270) {
-        dstCanvas.width = srcCanvas.height;
-        dstCanvas.height = srcCanvas.width;
-    } else {
-        dstCanvas.width = srcCanvas.width;
-        dstCanvas.height = srcCanvas.height;
+    try {
+        const ctx = dstCanvas.getContext('2d')!;
+        if (rotate === 90 || rotate === 270) {
+            dstCanvas.width = srcCanvas.height;
+            dstCanvas.height = srcCanvas.width;
+        } else {
+            dstCanvas.width = srcCanvas.width;
+            dstCanvas.height = srcCanvas.height;
+        }
+        // rotate the canvas with the upper-left corner as the origin
+        ctx.translate(dstCanvas.width / 2, dstCanvas.height / 2);
+        ctx.rotate(rotate * Math.PI / 180);
+        ctx.drawImage(srcCanvas, -srcCanvas.width / 2, -srcCanvas.height / 2);
+        return dstCanvas;
+    } catch (error) {
+        dstCanvas.width = dstCanvas.height = 0;
+        throw error;
     }
-    // rotate the canvas with the upper-left corner as the origin
-    ctx.translate(dstCanvas.width / 2, dstCanvas.height / 2);
-    ctx.rotate(rotate * Math.PI / 180);
-    ctx.drawImage(srcCanvas, -srcCanvas.width / 2, -srcCanvas.height / 2);
-    return dstCanvas;
 }

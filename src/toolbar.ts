@@ -91,7 +91,8 @@ export class PDFPlusToolbar extends PDFPlusComponent {
             setTooltip(dropdownEl, 'Display options');
 
             let shown = false;
-            dropdownEl.addEventListener('click', () => {
+            let activeMenu: Menu | null = null;
+            this.registerDomEvent(dropdownEl, 'click', () => {
                 if (!shown) {
                     const currentScaleValue = pdfViewer.currentScaleValue;
                     const scrollMode = pdfViewer.scrollMode;
@@ -243,15 +244,24 @@ export class PDFPlusToolbar extends PDFPlusComponent {
                         });
                     menu.onHide(() => {
                         shown = false;
+                        if (activeMenu === menu) activeMenu = null;
                     });
+                    activeMenu = menu;
                     showMenuUnderParentEl(menu, dropdownEl);
                     shown = true;
                 }
             });
 
-            toolbar.toolbarEl.doc.win.setTimeout(() => {
+            const win = toolbar.toolbarEl.doc.win;
+            const timer = win.setTimeout(() => {
                 clickableIconEl.remove();
                 toolbar.toolbarLeftEl.insertAfter(dropdownEl, toolbar.zoomInEl);
+            });
+            this.register(() => {
+                win.clearTimeout(timer);
+                activeMenu?.hide();
+                dropdownEl.remove();
+                if (!clickableIconEl.isConnected) toolbar.zoomInEl.after(clickableIconEl);
             });
         }));
     }
@@ -282,18 +292,22 @@ export class PDFPlusToolbar extends PDFPlusComponent {
                 const clamped = Math.min(Math.max(value, window.pdfjsViewer.MIN_SCALE), window.pdfjsViewer.MAX_SCALE);
                 pdfViewer.currentScale = clamped;
             });
-            eventBus.on('scalechanging', ({ scale }) => {
+            const onScaleChanging = ({ scale }: { scale: number }) => {
                 inputEl.value = Math.round(scale * 100) + '';
-            });
+            };
+            eventBus.on('scalechanging', onScaleChanging);
+            this.register(() => eventBus.off('scalechanging', onScaleChanging));
             if (pdfViewer.currentScale) {
                 inputEl.value = Math.round(pdfViewer.currentScale * 100) + '';
             }
 
-            inputEl.doc.win.setTimeout(() => {
+            const win = inputEl.doc.win;
+            const timer = win.setTimeout(() => {
                 inputEl.after(createSpan({ cls: 'pdf-zoom-level-percent', text: '%' }, (spanEl) => {
                     this.register(() => spanEl.remove());
                 }));
             });
+            this.register(() => win.clearTimeout(timer));
         }));
     }
 }

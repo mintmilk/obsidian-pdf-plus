@@ -29,21 +29,40 @@ export const patchBacklink = (plugin: PDFPlus): boolean => {
 
     if (!backlinkView || !backlinkRenderer) return false;
 
+    let active = true;
+    const generations = new WeakMap<BacklinkView, number>();
+    const invalidate = (view: BacklinkView) => {
+        const manager = view.pdfManager;
+        delete view.pdfManager;
+        manager?.unload();
+        const generation = (generations.get(view) ?? 0) + 1;
+        generations.set(view, generation);
+        return generation;
+    };
+    plugin.register(() => { active = false; });
+
     plugin.register(around(Object.getPrototypeOf(backlinkView.constructor.prototype), {
         onLoadFile(old) {
             return async function (this: BacklinkView, file: TFile) {
+                if (this.getViewType() !== 'backlink') return old.call(this, file);
+                const generation = invalidate(this);
                 await old.call(this, file);
-                if (this.getViewType() === 'backlink' && file.extension === 'pdf') {
-                    this.pdfManager = new BacklinkPanePDFManager(plugin, this.backlink, file).setParents(plugin, this);
+                if (!active || (plugin as PDFPlus & { _loaded?: boolean })._loaded === false
+                    || (this as BacklinkView & { _loaded?: boolean })._loaded === false
+                    || generations.get(this) !== generation || this.file !== file) return;
+                if (file.extension === 'pdf') {
+                    const manager = new BacklinkPanePDFManager(plugin, this.backlink, file);
+                    this.pdfManager = manager;
+                    manager.register(() => {
+                        if (this.pdfManager === manager) delete this.pdfManager;
+                    });
+                    manager.setParents(plugin, this);
                 }
             };
         },
         onUnloadFile(old) {
-            return async function (file: TFile) {
-                const self = this as BacklinkView;
-                if (file.extension === 'pdf' && self.pdfManager) {
-                    self.pdfManager.unload();
-                }
+            return async function (this: BacklinkView, file: TFile) {
+                if (this.getViewType() === 'backlink') invalidate(this);
                 await old.call(this, file);
             };
         }

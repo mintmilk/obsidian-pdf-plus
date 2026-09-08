@@ -313,6 +313,24 @@ export class RectangleCache extends PDFPlusComponent {
                 this.pagewiseIdToRectsMap.clear();
             }
         }));
+        this.registerEvent(this.visualizer.index.on('update', () => {
+            const liveSelections = new Set<string>();
+            for (const cache of this.visualizer.index.backlinks) {
+                if (cache.page && cache.selection) {
+                    liveSelections.add(`${cache.page}:${PDFPageBacklinkIndex.selectionId(cache.selection)}`);
+                }
+            }
+            for (const [page, rects] of this.pagewiseIdToRectsMap) {
+                for (const id of rects.keys()) {
+                    if (!liveSelections.has(`${page}:${id}`)) rects.delete(id);
+                }
+                if (!rects.size) this.pagewiseIdToRectsMap.delete(page);
+            }
+        }));
+    }
+
+    onunload() {
+        this.pagewiseIdToRectsMap.clear();
     }
 
     getIdToRectsMap(pageNumber: number) {

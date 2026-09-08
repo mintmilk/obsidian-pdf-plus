@@ -54,7 +54,8 @@ const MAX_ADVANCE_ERROR = 0.5;
 /** Whether a font reproduces the PDF's own character widths, decided once per font. */
 export const fontVerdicts = new Map<string, { use: boolean, family: number, fallback: number }>();
 
-let measureCtx: CanvasRenderingContext2D | null = null;
+const MAX_FONT_VERDICTS = 512;
+const measureContexts = new WeakMap<Document, CanvasRenderingContext2D>();
 
 /** Single-character widths. A few hundred per font, unlike whole strings. */
 const charWidths = new Map<string, number>();
@@ -118,9 +119,11 @@ export function fontEffect(doc: Document, family: string, fallback: string, font
 }
 
 function measureText(doc: Document, font: string, text: string): number {
+    let measureCtx = measureContexts.get(doc);
     if (!measureCtx) {
-        measureCtx = doc.createElement('canvas').getContext('2d');
+        measureCtx = doc.createElement('canvas').getContext('2d') ?? undefined;
         if (!measureCtx) return 0;
+        measureContexts.set(doc, measureCtx);
     }
     if (measureCtx.font !== font) measureCtx.font = font;
     return measureCtx.measureText(text).width;
@@ -199,6 +202,8 @@ export function alignTextLayerNode(div: HTMLElement, item: TextContentItem): boo
             family: familyError,
             fallback: fallbackError,
         };
+        // PDF.js generates new font names for each document load.
+        if (fontVerdicts.size >= MAX_FONT_VERDICTS) fontVerdicts.delete(fontVerdicts.keys().next().value!);
         fontVerdicts.set(family, verdict);
     }
     if (!verdict.use) return false;

@@ -90,7 +90,8 @@ export function isTargetHTMLElement(evt: UIEvent, target: EventTarget | null): t
 }
 
 /** Generalizes Obsidian's onHoverLink to arbitrary callback functions. */
-export function onModKeyPress(evt: MouseEvent | TouchEvent | KeyboardEvent, targetEl: HTMLElement, callback: () => any) {
+export function onModKeyPress(evt: MouseEvent | TouchEvent | KeyboardEvent, targetEl: HTMLElement, callback: () => any, owner?: Component) {
+    if (owner && (owner as Component & { _loaded?: boolean })._loaded === false) return;
     if (Keymap.isModifier(evt, 'Mod')) {
         callback();
         return;
@@ -98,12 +99,21 @@ export function onModKeyPress(evt: MouseEvent | TouchEvent | KeyboardEvent, targ
 
     const doc = evt.doc;
     let removed = false;
+    const component = new Component();
+    owner?.addChild(component);
+    component.load();
     const removeHandlers = () => {
+        if (removed) return;
+        removed = true;
+        if (owner) owner.removeChild(component);
+        else component.unload();
+    };
+    component.register(() => {
         removed = true;
         doc.removeEventListener('keydown', onKeyDown);
         doc.removeEventListener('mouseover', onMouseOver);
         doc.removeEventListener('mouseleave', onMouseLeave);
-    };
+    });
 
     // Watch for the mod key press
     const onKeyDown = (e: KeyboardEvent) => {
@@ -139,9 +149,14 @@ export function showChildElOnParentElHover(config: {
     timeout?: number,
 }) {
     const { parentEl, createChildEl, removeChildEl, component: parentComponent, timeout } = config;
+    let current: { component: Component, enterParent: () => void } | null = null;
 
     const onParentElMouseOver = (evt: MouseEvent) => {
         if (isMouseEventExternal(evt, parentEl)) {
+            if (current) {
+                current.enterParent();
+                return;
+            }
             let isParentHovered = true;
             let isChildHovered = false;
 
@@ -149,14 +164,26 @@ export function showChildElOnParentElHover(config: {
 
             const component = new Component();
             parentComponent?.addChild(component);
-            component.register(() => childEl && removeChildEl(childEl));
             component.load();
+            const win = parentEl.win;
+            let timer: number | undefined;
+            current = { component, enterParent: () => { isParentHovered = true; } };
+            component.register(() => {
+                win.clearTimeout(timer);
+                if (current?.component === component) current = null;
+                if (childEl) removeChildEl(childEl);
+            });
 
-            const requestCheck = () => setTimeout(() => {
-                if (!isParentHovered && !isChildHovered) {
-                    component.unload();
-                }
-            }, timeout ?? 120);
+            const requestCheck = () => {
+                win.clearTimeout(timer);
+                timer = win.setTimeout(() => {
+                    timer = undefined;
+                    if (!isParentHovered && !isChildHovered) {
+                        if (parentComponent) parentComponent.removeChild(component);
+                        else component.unload();
+                    }
+                }, timeout ?? 120);
+            };
 
             const onParentMouseOut = (evt: MouseEvent) => {
                 if (isMouseEventExternal(evt, parentEl)) {
@@ -171,13 +198,12 @@ export function showChildElOnParentElHover(config: {
                     if (isMouseEventExternal(evt, childEl)) {
                         isChildHovered = true;
 
-                        const onChildMouseOut = (evt: MouseEvent) => {
-                            if (isMouseEventExternal(evt, childEl)) {
-                                isChildHovered = false;
-                                requestCheck();
-                            }
-                        };
-                        component.registerDomEvent(childEl, 'mouseout', onChildMouseOut);
+                    }
+                });
+                component.registerDomEvent(childEl, 'mouseout', (evt) => {
+                    if (isMouseEventExternal(evt, childEl)) {
+                        isChildHovered = false;
+                        requestCheck();
                     }
                 });
             }

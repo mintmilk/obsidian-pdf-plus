@@ -23,6 +23,7 @@ const VimHintTargetSelectors = {
 /** Inspired by Tridactyl's hint mode. */
 export class VimHintMode extends VimBindingsMode {
     onExitCallbacks: (() => void)[] = [];
+    private hintClearCallbacks: (() => void)[] = [];
     targets: VimHintTarget[] = [];
 
     setTarget(...targets: VimHintTarget[]) {
@@ -34,6 +35,7 @@ export class VimHintMode extends VimBindingsMode {
     }
 
     enter() {
+        this.exit();
         if (this.targets.length === 0) {
             this.setTarget(VimHintTarget.Link);
         }
@@ -57,7 +59,16 @@ export class VimHintMode extends VimBindingsMode {
 
     exit() {
         this.vimScope.unregisterAllKeymaps(['hint']);
-        this.onExitCallbacks.forEach(cb => cb());
+        this.clearHints();
+        this.onExitCallbacks.splice(0).forEach(cb => cb());
+    }
+
+    onunload() {
+        this.exit();
+    }
+
+    private clearHints() {
+        this.hintClearCallbacks.splice(0).forEach(cb => cb());
     }
 
     onExit(cb: () => void) {
@@ -65,6 +76,7 @@ export class VimHintMode extends VimBindingsMode {
     }
 
     hintPage(pageNumber: number) {
+        this.clearHints();
         if (!this.pdfViewer) return;
         const pageView = this.pdfViewer.getPageView(pageNumber - 1);
         const pageDiv = pageView.div;
@@ -76,7 +88,7 @@ export class VimHintMode extends VimBindingsMode {
         const dataAttrName = 'pdfPlusVimHint';
 
         pageDiv.addClass(cls);
-        this.onExit(() => pageDiv.removeClass(cls));
+        this.hintClearCallbacks.push(() => pageDiv.removeClass(cls));
 
         const selector = this.getTargetSelector();
         const hintableEls = pageDiv.querySelectorAll<HTMLElement>(selector);
@@ -124,7 +136,7 @@ export class VimHintMode extends VimBindingsMode {
             const hint = '' + hintnames.next().value;
 
             hintableEl.dataset[dataAttrName] = hint;
-            this.onExit(() => delete hintableEl.dataset[dataAttrName]);
+            this.hintClearCallbacks.push(() => delete hintableEl.dataset[dataAttrName]);
 
             keymaps[hint] = () => {
                 this.openHintableEl(hintableEl, pageView);

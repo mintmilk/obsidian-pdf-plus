@@ -1,4 +1,4 @@
-import { Keymap, Menu, MenuItem, Notice, Platform, TFile } from 'obsidian';
+import { Component, Keymap, Menu, MenuItem, Notice, Platform, TFile } from 'obsidian';
 
 import PDFPlus from 'main';
 import { PDFOutlineItem, PDFOutlines } from 'lib/outlines';
@@ -13,7 +13,8 @@ import { PDFPlusComponent } from 'lib/component';
 
 
 export const onContextMenu = async (plugin: PDFPlus, child: PDFViewerChild, evt: MouseEvent): Promise<void> => {
-    if (!child.palette) return;
+    const component = child.component;
+    if (!child.palette || !component || child.unloaded) return;
 
     // take from app.js
     if (Platform.isDesktopApp) {
@@ -24,25 +25,41 @@ export const onContextMenu = async (plugin: PDFPlus, child: PDFViewerChild, evt:
         if (electron && evt.isTrusted) {
             evt.stopPropagation();
             evt.stopImmediatePropagation();
-            await new Promise((resolve) => {
-                // wait up to 1 sec
-                const timer = evt.win.setTimeout(() => resolve(null), 1000);
-                electron!.ipcRenderer.once('context-menu', (n, r) => {
+            await new Promise<void>((resolve, reject) => {
+                const owner = component.addChild(new Component());
+                const finish = () => component.removeChild(owner);
+                const timer = evt.win.setTimeout(finish, 1000);
+                const ipc = electron.ipcRenderer;
+                // A timeout or closing the PDF must also remove the once listener.
+                owner.register(() => {
                     evt.win.clearTimeout(timer);
-                    resolve(r);
+                    ipc.removeListener('context-menu', finish);
+                    resolve();
                 });
-                electron!.ipcRenderer.send('context-menu');
+                ipc.once('context-menu', finish);
+                try {
+                    ipc.send('context-menu');
+                } catch (error) {
+                    reject(error);
+                    finish();
+                }
             });
         }
     }
 
-    if (!evt.defaultPrevented) {
+    if (!evt.defaultPrevented && !child.unloaded && child.component === component) {
         await showContextMenu(plugin, child, evt);
     }
 };
 
 export async function showContextMenu(plugin: PDFPlus, child: PDFViewerChild, evt: MouseEvent) {
+    const component = child.component;
+    if (!component || child.unloaded) return;
     const menu = await PDFPlusContextMenu.fromMouseEvent(plugin, child, evt);
+    if (child.unloaded || child.component !== component) {
+        menu.unload();
+        return;
+    }
 
     child.clearEphemeralUI();
     menu.showAtMouseEvent(evt);
@@ -50,7 +67,8 @@ export async function showContextMenu(plugin: PDFPlus, child: PDFViewerChild, ev
 }
 
 export async function showContextMenuAtSelection(plugin: PDFPlus, child: PDFViewerChild, selection: Selection) {
-    if (!selection || !selection.focusNode || selection.isCollapsed) {
+    const component = child.component;
+    if (!component || child.unloaded || !selection || !selection.focusNode || selection.isCollapsed) {
         return;
     }
 
@@ -65,7 +83,16 @@ export async function showContextMenuAtSelection(plugin: PDFPlus, child: PDFView
     const { x, y } = range.getBoundingClientRect();
 
     const menu = new PDFPlusContextMenu(plugin, child);
-    await menu.addItems();
+    try {
+        await menu.addItems();
+    } catch (error) {
+        menu.unload();
+        throw error;
+    }
+    if (child.unloaded || child.component !== component) {
+        menu.unload();
+        return;
+    }
     child.clearEphemeralUI();
     plugin.shownMenus.forEach((menu) => menu.hide());
     menu.showAtPosition({ x, y }, doc);
@@ -452,7 +479,12 @@ export class PDFPlusContextMenu extends PDFPlusMenu {
 
     static async fromMouseEvent(plugin: PDFPlus, child: PDFViewerChild, evt: MouseEvent) {
         const menu = new PDFPlusContextMenu(plugin, child);
-        await menu.addItems(evt);
+        try {
+            await menu.addItems(evt);
+        } catch (error) {
+            menu.unload();
+            throw error;
+        }
         return menu;
     }
 

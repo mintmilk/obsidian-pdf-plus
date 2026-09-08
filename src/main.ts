@@ -88,16 +88,21 @@ export default class PDFPlus extends Plugin {
 	obsidianHasTextSelectionBug: boolean;
 	requiresDataviewInlineFieldsMigration = false;
 	isDebugMode: boolean = false;
+	private loadGeneration = 0;
 
 	async onload() {
+		const generation = ++this.loadGeneration;
 		this.checkVersion();
 
 		this.addIcons();
 
 		await loadPdfJs();
+		if (generation !== this.loadGeneration) return;
 
 		await this.loadSettings();
+		if (generation !== this.loadGeneration) return;
 		await this.saveSettings();
+		if (generation !== this.loadGeneration) return;
 
 		this.domManager = this.addChild(new DomManager(this));
 		this.domManager.registerCalloutRenderer();
@@ -131,6 +136,7 @@ export default class PDFPlus extends Plugin {
 	}
 
 	async onunload() {
+		++this.loadGeneration;
 		await this.cleanUpResources();
 	}
 
@@ -560,7 +566,7 @@ export default class PDFPlus extends Plugin {
 	}
 
 	private patchObsidian() {
-		this.app.workspace.onLayoutReady(() => {
+		this.registerOnLayoutReady(() => {
 			patchWorkspace(this);
 			patchPagePreview(this);
 			patchMenu(this);
@@ -572,7 +578,7 @@ export default class PDFPlus extends Plugin {
 	}
 
 	tryPatchUntilSuccess(patcher: (plugin: PDFPlus) => boolean, noticeOnFail?: () => Notice | undefined) {
-		this.app.workspace.onLayoutReady(() => {
+		this.registerOnLayoutReady(() => {
 			const success = patcher(this);
 			if (!success) {
 				const notice = noticeOnFail?.();
@@ -586,6 +592,20 @@ export default class PDFPlus extends Plugin {
 				});
 				this.registerEvent(eventRef);
 			}
+		});
+	}
+
+	/** A queued workspace callback must release its captures if the plugin unloads first. */
+	registerOnLayoutReady(callback: () => any) {
+		if ((this as Plugin & { _loaded?: boolean })._loaded === false) return;
+		const owner = this.addChild(new Component());
+		let pending: { plugin: PDFPlus, callback: () => any, owner: Component } | null = { plugin: this, callback, owner };
+		owner.register(() => { pending = null; });
+		this.app.workspace.onLayoutReady(() => {
+			const current = pending;
+			if (!current) return;
+			current.plugin.removeChild(current.owner);
+			current.callback();
 		});
 	}
 
@@ -635,8 +655,19 @@ export default class PDFPlus extends Plugin {
 				}
 			}
 
-			// Double-lick PDF embeds to open links
-			this.registerDomEvent(embed.containerEl, 'dblclick', (evt) => {
+			// Release embed handlers when either the embed or the plugin unloads.
+			const component = embed.addChild(this.addChild(new Component()));
+			component.register(() => {
+				for (const parent of [this, embed]) {
+					// An unloading parent already clears its children; do not mutate that iteration.
+					if ((parent as Component & { _loaded?: boolean })._loaded !== false) parent.removeChild(component);
+				}
+				// Unlike native embeds, cropped embeds contain plugin-owned rendering jobs.
+				if (embed instanceof PDFCroppedEmbed) embed.unload();
+			});
+
+			// Double-click PDF embeds to open links
+			component.registerDomEvent(embed.containerEl, 'dblclick', (evt) => {
 				if (this.settings.dblclickEmbedToOpenLink
 					&& isTargetHTMLElement(evt, evt.target)
 					// .pdf-container is necessary to avoid opening links when double-clicking on the toolbar
@@ -654,7 +685,7 @@ export default class PDFPlus extends Plugin {
 					'wheel', // mousewheel
 					'touchmove' // finger swipe
 				] as const) {
-					this.registerDomEvent(embed.containerEl, eventType, (evt) => {
+					component.registerDomEvent(embed.containerEl, eventType, (evt) => {
 						if (isTargetHTMLElement(evt, evt.target)
 							&& evt.target.closest('.pdf-embed[src*="#"] .pdf-viewer-container')) {
 							evt.preventDefault();
@@ -664,7 +695,7 @@ export default class PDFPlus extends Plugin {
 			}
 
 			if (embed instanceof PDFCroppedEmbed) {
-				this.registerDomEvent(embed.containerEl, 'click', (evt) => {
+				component.registerDomEvent(embed.containerEl, 'click', (evt) => {
 					if (isTargetHTMLElement(evt, evt.target) && evt.target.closest('.cm-editor')) {
 						// Prevent the click event causing the editor to select the link like an image embed
 						evt.preventDefault();
@@ -786,7 +817,7 @@ export default class PDFPlus extends Plugin {
 			minHoursSinceRelease: 24,
 		});
 		if (result.shouldUpdate) {
-			this.app.workspace.onLayoutReady(() => {
+			this.registerOnLayoutReady(() => {
 				new Notice(createFragment((el) => {
 					el.append(
 						'PDF++: There is a newer version available! ',
@@ -844,7 +875,7 @@ export default class PDFPlus extends Plugin {
 	private startTrackingActiveMarkdownFile() {
 		const { workspace, vault } = this.app;
 
-		workspace.onLayoutReady(() => {
+		this.registerOnLayoutReady(() => {
 			// initialize lastActiveMarkdownFile
 			const activeFile = workspace.getActiveFile();
 			if (activeFile && activeFile.extension === 'md') {

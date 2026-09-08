@@ -8,6 +8,7 @@ export class PDFPlusModal extends Modal {
     plugin: PDFPlus;
     lib: PDFPlusLib;
     component: Component;
+    private openOwner: Component | undefined;
 
     constructor(plugin: PDFPlus) {
         super(plugin.app);
@@ -18,11 +19,33 @@ export class PDFPlusModal extends Modal {
     }
 
     onOpen() {
+        const previousOwner = this.openOwner;
+        this.openOwner = undefined;
+        if (previousOwner) this.plugin.removeChild(previousOwner);
+        this.component.unload();
+        this.component = new Component();
         this.component.load();
+        const owner = new Component();
+        this.openOwner = owner;
+        owner.register(() => {
+            if (this.openOwner === owner) {
+                this.openOwner = undefined;
+                this.close();
+            }
+        });
+        this.plugin.addChild(owner);
+        owner.load();
+    }
+
+    protected isCurrentOpen(component: Component) {
+        return !!this.openOwner && this.component === component;
     }
 
     onClose() {
-        this.contentEl.empty();
+        const owner = this.openOwner;
+        this.openOwner = undefined;
+        if (owner) this.plugin.removeChild(owner);
         this.component.unload();
+        this.contentEl.empty();
     }
 }

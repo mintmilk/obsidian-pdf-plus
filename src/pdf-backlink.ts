@@ -15,6 +15,7 @@ export class BacklinkPanePDFManager extends PDFPlusComponent {
     navButtonEl: HTMLElement | null = null;
     pageTracker: BacklinkPanePDFPageTracker;
     isTrackingPage: boolean;
+    private hoverCleanups = new Set<() => void>();
 
     constructor(plugin: PDFPlus, renderer: BacklinkRenderer, file: TFile) {
         super(plugin);
@@ -43,16 +44,33 @@ export class BacklinkPanePDFManager extends PDFPlusComponent {
 
                 for (const dom of visDoms) dom.addClass('hovered-highlight');
 
-                let rectEl: HTMLElement | null = null;
+                const rectEls = new Set<HTMLElement>();
+                let active = true;
+                const cleanup = () => {
+                    active = false;
+                    for (const dom of visDoms) dom.removeClass('hovered-highlight');
+                    for (const rectEl of rectEls) rectEl.remove();
+                    rectEls.clear();
+                    backlinkItemEl.removeEventListener('mouseout', listener);
+                    this.hoverCleanups.delete(cleanup);
+                };
+                const listener = (evt: MouseEvent) => {
+                    if (isMouseEventExternal(evt, backlinkItemEl)) cleanup();
+                };
+                this.hoverCleanups.add(cleanup);
+                backlinkItemEl.addEventListener('mouseout', listener);
+
                 if (cache.page && cache.annotation) {
                     const pageNumber = cache.page;
                     const annotId = cache.annotation.id;
 
                     viewer.then((child) => {
+                        if (!active || child.unloaded) return;
                         const pageView = child.getPage(pageNumber);
                         const annot = pageView.annotationLayer?.annotationLayer.getAnnotation(annotId);
                         if (annot) {
-                            rectEl = this.lib.highlight.viewer.placeRectInPage(annot.data.rect, pageView);
+                            const rectEl = this.lib.highlight.viewer.placeRectInPage(annot.data.rect, pageView);
+                            rectEls.add(rectEl);
                             rectEl.addClass('pdf-plus-annotation-bounding-rect');
                         }
                     });
@@ -62,27 +80,19 @@ export class BacklinkPanePDFManager extends PDFPlusComponent {
                     const { left, bottom, right, top } = cache.FitR;
 
                     viewer.then((child) => {
+                        if (!active || child.unloaded) return;
                         const pageView = child.getPage(pageNumber);
-                        rectEl = this.lib.highlight.viewer.placeRectInPage([left, bottom, right, top], pageView);
+                        const rectEl = this.lib.highlight.viewer.placeRectInPage([left, bottom, right, top], pageView);
+                        rectEls.add(rectEl);
                         rectEl.addClass('rect-highlight');
                     });
                 }
-
-                const listener = (evt: MouseEvent) => {
-                    if (isMouseEventExternal(evt, backlinkItemEl)) {
-                        for (const dom of visDoms) dom.removeClass('hovered-highlight');
-                        if (rectEl) rectEl.remove();
-
-                        backlinkItemEl.removeEventListener('mouseout', listener);
-                    }
-                };
-
-                backlinkItemEl.addEventListener('mouseout', listener);
             });
         });
     }
 
     onunload() {
+        for (const cleanup of this.hoverCleanups) cleanup();
         this.navButtonEl?.remove();
         this.pageTracker.unload();
     }
@@ -189,6 +199,7 @@ export class BacklinkPanePDFManager extends PDFPlusComponent {
 /** While this component is loaded, the backlinks pane shows only backlinks to the page that is currently opened in the PDF viewer. */
 export class BacklinkPanePDFPageTracker extends PDFPlusComponent {
     matchCountObserver: MutationObservingChild;
+    private loadGeneration = 0;
 
     constructor(plugin: PDFPlus, public renderer: BacklinkRenderer, public file: TFile) {
         super(plugin);
@@ -226,15 +237,19 @@ export class BacklinkPanePDFPageTracker extends PDFPlusComponent {
     }
 
     async onload() {
+        const generation = ++this.loadGeneration;
+        const isActive = () => generation === this.loadGeneration;
         this.renderer.backlinkDom.filter = undefined;
 
         const leaf = this.lib.workspace.getExistingLeafForPDFFile(this.file);
         if (leaf) {
             await this.lib.workspace.ensureViewLoaded(leaf);
+            if (!isActive()) return;
             const view = leaf.view;
 
             if (this.lib.isPDFView(view)) {
                 view.viewer.then((child) => {
+                    if (!isActive() || child.unloaded || !child.pdfViewer) return;
                     this.renderer.backlinkDom.filter = (file, linkCache) => {
                         return (child.pdfViewer && child.pdfViewer.pdfViewer)
                             ? this.filter(child.pdfViewer.pdfViewer.currentPageNumber, linkCache)
@@ -258,6 +273,7 @@ export class BacklinkPanePDFPageTracker extends PDFPlusComponent {
     }
 
     onunload() {
+        this.loadGeneration++;
         this.renderer.backlinkDom.filter = undefined;
         this.updateBacklinkDom();
     }

@@ -26,19 +26,22 @@ export class PDFDocumentTextStructureParser extends PDFPlusComponent {
         }));
     }
 
+    onunload() {
+        this.pages.clear();
+    }
+
     getPageParser(pageNumber: number) {
+        const page = this.pdfViewer.getPageView(pageNumber - 1);
+        const textLayerInfo = page?.textLayer && getTextLayerInfo(page.textLayer);
+        if (!textLayerInfo) {
+            this.pages.delete(pageNumber);
+            return;
+        }
+        const { textContentItems: items, textDivs: divs } = textLayerInfo;
         let parser = this.pages.get(pageNumber);
-        if (!parser) {
-            const page = this.pdfViewer.getPageView(pageNumber - 1);
-            if (page) {
-                const textLayer = page.textLayer;
-                const textLayerInfo = textLayer && getTextLayerInfo(textLayer);
-                if (textLayerInfo) {
-                    const { textContentItems: items, textDivs: divs } = textLayerInfo;
-                    parser = new PDFPageTextStructureParser(page, items, divs);
-                    this.pages.set(pageNumber, parser);
-                }
-            }
+        if (!parser || parser.items !== items || parser.divs !== divs) {
+            parser = new PDFPageTextStructureParser(page, items, divs);
+            this.pages.set(pageNumber, parser);
         }
         return parser;
     }

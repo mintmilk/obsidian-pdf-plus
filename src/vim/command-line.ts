@@ -16,6 +16,8 @@ export class VimCommandLineMode extends VimBindingsMode {
     historyIndex = 0;
     suggest: ExcmdSuggest;
     isActive = false;
+    private loadGeneration = 0;
+    private timers = new Set<ReturnType<typeof setTimeout>>();
 
     constructor(vim: VimBindings) {
         super(vim);
@@ -26,15 +28,15 @@ export class VimCommandLineMode extends VimBindingsMode {
             this.inputEl = el.createEl('input', { cls: 'pdf-plus-vim-command-input' }, (inputEl) => {
                 inputEl.placeholder = 'type a command or page number...';
 
-                inputEl.addEventListener('focusout', () => {
-                    setTimeout(() => {
+                this.registerDomEvent(inputEl, 'focusout', () => {
+                    this.defer(() => {
                         if (this.isActive) {
                             this.vim.enterNormalMode();
                         }
                     });
                 });
 
-                inputEl.addEventListener('keydown', (evt) => {
+                this.registerDomEvent(inputEl, 'keydown', (evt) => {
                     if (!evt.isComposing && evt.key === 'Enter') {
                         this.submitCommand();
                         return;
@@ -66,7 +68,7 @@ export class VimCommandLineMode extends VimBindingsMode {
         this.suggest = new ExcmdSuggest(this)
             .onSelect(({ item: { minNargs: nargs } }) =>
                 // Wait for the value of the input element to be updated
-                setTimeout(() => {
+                this.defer(() => {
                     if (!nargs) {
                         this.submitCommand();
                         return;
@@ -74,25 +76,43 @@ export class VimCommandLineMode extends VimBindingsMode {
                     this.inputEl.value += ' ';
                 }));
 
-        // Load vimrc
-        if (this.settings.vimrcPath) {
-            this.viewer.then((child) => {
-                const eventBus = child.pdfViewer.eventBus;
-                if (eventBus) {
-                    eventBus.on('pagesloaded', () => setTimeout(() => {
-                        if (this.plugin.vimrc === null) {
-                            const vimrcPath = normalizePath(this.settings.vimrcPath);
-                            this.app.vault.adapter.read(vimrcPath)
-                                .then((script) => this.runScript(this.plugin.vimrc = script));
-                        } else {
-                            this.runScript(this.plugin.vimrc);
-                        }
-                    }, // @ts-ignore
-                        { once: true }
-                    ));
+    }
+
+    onload() {
+        const generation = ++this.loadGeneration;
+        if (!this.settings.vimrcPath) return;
+        this.viewer.then((child) => {
+            if (generation !== this.loadGeneration || child.unloaded) return;
+            const runVimrc = () => this.defer(async () => {
+                if (generation !== this.loadGeneration) return;
+                try {
+                    const script = this.plugin.vimrc ?? await this.app.vault.adapter.read(normalizePath(this.settings.vimrcPath));
+                    if (generation !== this.loadGeneration) return;
+                    this.runScript(this.plugin.vimrc = script);
+                } catch (error) {
+                    if (generation === this.loadGeneration) console.error(error);
                 }
             });
-        }
+            const viewer = child.pdfViewer;
+            if (viewer.pdfViewer?.pagesCount) runVimrc();
+            else if (viewer.eventBus) this.lib.registerPDFEvent('pagesloaded', viewer.eventBus, this, runVimrc, { once: true });
+        });
+    }
+
+    onunload() {
+        this.loadGeneration++;
+        this.isActive = false;
+        this.suggest.close();
+        this.timers.forEach(timer => clearTimeout(timer));
+        this.timers.clear();
+    }
+
+    private defer(callback: () => any) {
+        const timer = setTimeout(() => {
+            this.timers.delete(timer);
+            void callback();
+        });
+        this.timers.add(timer);
     }
 
     async executeCommand(cmd: string, options: Partial<{ error: ErrorReportMethod[], history: boolean }> = { error: ['notice', 'console.error'], history: true }) {

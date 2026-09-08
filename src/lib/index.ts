@@ -456,25 +456,43 @@ export class PDFPlusLib {
     }
 
     registerGlobalDomEvent<K extends keyof DocumentEventMap>(component: Component, type: K, callback: (this: HTMLElement, ev: DocumentEventMap[K]) => any, options?: boolean | AddEventListenerOptions): void {
-        component.registerDomEvent(document, type, callback, options);
-
-        this.app.workspace.onLayoutReady(() => {
-            // For the currently opened windows
-            const windows = new Set<Window>();
-            this.app.workspace.iterateAllLeaves((leaf) => {
-                const win = leaf.getContainer().win;
-                if (win !== window) windows.add(win);
+        type Pending = { start: (() => void) | null };
+        // The non-cancellable workspace callback retains only this cleared holder after unload.
+        function makeLayoutCallback(task: Pending) {
+            return () => {
+                const start = task.start;
+                task.start = null;
+                start?.();
+            };
+        }
+        // Keep the owner's closures out of the layout callback factory's lexical context.
+        function install(owner: Component, workspace: App['workspace'], name: K, listener: EventListener, opts?: boolean | AddEventListenerOptions) {
+            const documents = new Map<Window, Document>();
+            const attach = (win: Window) => {
+                if (documents.has(win)) return;
+                const doc = win.document;
+                doc.addEventListener(name, listener, opts);
+                documents.set(win, doc);
+            };
+            const detach = (win: Window) => {
+                documents.get(win)?.removeEventListener(name, listener, opts);
+                documents.delete(win);
+            };
+            attach(window);
+            const pending: Pending = {
+                start: () => {
+                    owner.registerEvent(workspace.on('window-open', (_, win) => attach(win)));
+                    owner.registerEvent(workspace.on('window-close', (_, win) => detach(win)));
+                    workspace.iterateAllLeaves((leaf) => attach(leaf.getContainer().win));
+                },
+            };
+            owner.register(() => {
+                pending.start = null;
+                for (const win of documents.keys()) detach(win);
             });
-
-            windows.forEach((window) => {
-                component.registerDomEvent(window.document, type, callback, options);
-            });
-
-            // For windows opened in the future
-            component.registerEvent(this.app.workspace.on('window-open', (win, window) => {
-                component.registerDomEvent(window.document, type, callback, options);
-            }));
-        });
+            workspace.onLayoutReady(makeLayoutCallback(pending));
+        }
+        install(component, this.app.workspace, type, callback as EventListener, options);
     }
 
     /**
@@ -808,28 +826,68 @@ export class PDFPlusLib {
         return null;
     }
 
-    async loadPDFDocument(file: TFile): Promise<PDFDocumentProxy> {
+    async loadPDFDocument(file: TFile, signal?: AbortSignal): Promise<PDFDocumentProxy> {
+        signal?.throwIfAborted();
         const url = await this.getExternalPDFUrl(file);
-        if (url) {
-            return await this.loadPDFDocumentFromArrayBufferOrUrl({ url });
+        let documentOwnsUrl = false;
+        try {
+            signal?.throwIfAborted();
+            if (url) {
+                const doc = await this.loadPDFDocumentFromArrayBufferOrUrl({ url }, signal);
+                if (url.startsWith('blob:')) {
+                    const destroy = doc.destroy.bind(doc);
+                    doc.destroy = async () => {
+                        try { await destroy(); }
+                        finally { URL.revokeObjectURL(url); }
+                    };
+                    documentOwnsUrl = true;
+                }
+                return doc;
+            }
+
+            const buffer = await this.app.vault.readBinary(file);
+            return await this.loadPDFDocumentFromArrayBufferOrUrl({ data: buffer }, signal);
+        } finally {
+            // Preserve successful URLs for lazy PDF.js range requests. Only the
+            // returned document owns them; failures have no document to release them.
+            if (!documentOwnsUrl && url?.startsWith('blob:')) URL.revokeObjectURL(url);
         }
-
-        const buffer = await this.app.vault.readBinary(file);
-        return await this.loadPDFDocumentFromArrayBufferOrUrl({ data: buffer });
     }
 
-    async loadPDFDocumentFromArrayBuffer(buffer: ArrayBuffer): Promise<PDFDocumentProxy> {
-        return await this.loadPDFDocumentFromArrayBufferOrUrl({ data: buffer });
+    async loadPDFDocumentFromArrayBuffer(buffer: ArrayBuffer, signal?: AbortSignal): Promise<PDFDocumentProxy> {
+        return await this.loadPDFDocumentFromArrayBufferOrUrl({ data: buffer }, signal);
     }
 
-    async loadPDFDocumentFromArrayBufferOrUrl(source: { data: ArrayBuffer } | { url: string }): Promise<PDFDocumentProxy> {
+    async loadPDFDocumentFromArrayBufferOrUrl(source: { data: ArrayBuffer } | { url: string }, signal?: AbortSignal): Promise<PDFDocumentProxy> {
+        signal?.throwIfAborted();
         const loadingTask = window.pdfjsLib.getDocument({
             ...source,
             cMapPacked: true,
             cMapUrl: '/lib/pdfjs/cmaps/',
             standardFontDataUrl: '/lib/pdfjs/standard_fonts/',
         });
-        return await loadingTask.promise;
+        let destruction: Promise<void> | undefined;
+        const destroy = () => destruction ??= loadingTask.destroy();
+        let rejectAbort: ((reason: unknown) => void) | undefined;
+        const aborted = signal ? new Promise<never>((_, reject) => { rejectAbort = reject; }) : undefined;
+        const abort = () => {
+            rejectAbort?.(signal!.reason);
+            void destroy().catch(console.error);
+        };
+        signal?.addEventListener('abort', abort, { once: true });
+        if (signal?.aborted) abort();
+        try {
+            const doc = await (aborted ? Promise.race([loadingTask.promise, aborted]) : loadingTask.promise);
+            signal?.throwIfAborted();
+            return doc; // The caller owns successful documents and must destroy them.
+        } catch (error) {
+            // Cleanup failure must not hide the original loading/cancellation error.
+            await destroy().catch(console.error);
+            signal?.throwIfAborted();
+            throw error;
+        } finally {
+            signal?.removeEventListener('abort', abort);
+        }
     }
 
     async loadPdfLibDocument(file: TFile, readonly: boolean = false): Promise<PDFDocument> {
@@ -936,28 +994,38 @@ export class PDFPlusLib {
         return new Promise<void>((resolve) => this.app.metadataCache.onCleanCache(resolve));
     }
 
-    async renderPDFPageToCanvas(page: PDFPageProxy, resolution?: number, renderParams: OptionalRenderParameters = {}): Promise<HTMLCanvasElement> {
+    async renderPDFPageToCanvas(page: PDFPageProxy, resolution?: number, renderParams: OptionalRenderParameters = {}, signal?: AbortSignal): Promise<HTMLCanvasElement> {
+        signal?.throwIfAborted();
         const canvas = createEl('canvas');
-        const canvasContext = canvas.getContext('2d')!;
-
-        const viewport = page.getViewport({ scale: 1 });
-
-        const outputScale = resolution
-            ?? window.devicePixelRatio // Support HiDPI-screens
-            ?? 1;
-
-        canvas.width = Math.floor(viewport.width * outputScale);
-        canvas.height = Math.floor(viewport.height * outputScale);
-        canvas.setCssStyles({
-            width: Math.floor(viewport.width) + 'px',
-            height: Math.floor(viewport.height) + 'px',
-        });
-
-        const transform = [outputScale, 0, 0, outputScale, 0, 0];
-
-        await page.render({ canvas, canvasContext, transform, viewport, ...renderParams }).promise;
-
-        return canvas;
+        try {
+            const canvasContext = canvas.getContext('2d')!;
+            const viewport = page.getViewport({ scale: 1 });
+            const outputScale = resolution ?? window.devicePixelRatio ?? 1;
+            canvas.width = Math.floor(viewport.width * outputScale);
+            canvas.height = Math.floor(viewport.height * outputScale);
+            canvas.setCssStyles({
+                width: Math.floor(viewport.width) + 'px',
+                height: Math.floor(viewport.height) + 'px',
+            });
+            const transform = [outputScale, 0, 0, outputScale, 0, 0];
+            const task = page.render({ canvas, canvasContext, transform, viewport, ...renderParams });
+            const abort = () => task.cancel();
+            signal?.addEventListener('abort', abort, { once: true });
+            if (signal?.aborted) abort();
+            try {
+                await task.promise;
+                signal?.throwIfAborted();
+            } catch (error) {
+                signal?.throwIfAborted();
+                throw error;
+            } finally {
+                signal?.removeEventListener('abort', abort);
+            }
+            return canvas; // Successful callers own the canvas.
+        } catch (error) {
+            canvas.width = canvas.height = 0;
+            throw error;
+        }
     }
 
     /**
@@ -967,7 +1035,7 @@ export class PDFPlusLib {
      * - resolution: The resolution of the PDF page rendering.
      * - cropRect: The rectangle to crop the PDF page to. The coordinates are in PDF space.
      */
-    async pdfPageToImageDataUrl(page: PDFPageProxy, options?: PDFPageToImageOptions): Promise<string> {
+    async pdfPageToImageDataUrl(page: PDFPageProxy, options?: PDFPageToImageOptions, signal?: AbortSignal): Promise<string> {
         const [left, bottom, right, top] = page.view;
         const pageWidth = right - left;
         const pageHeight = top - bottom;
@@ -984,21 +1052,29 @@ export class PDFPlusLib {
         const cropRect = options?.cropRect;
 
         const renderParams = options?.renderParams;
-        const canvas = await this.renderPDFPageToCanvas(page, resolution, renderParams);
+        const canvas = await this.renderPDFPageToCanvas(page, resolution, renderParams, signal);
+        const canvases = new Set([canvas]);
+        try {
+            if (!cropRect) return canvas.toDataURL(type, encoderOptions);
 
-        if (!cropRect) return canvas.toDataURL(type, encoderOptions);
-
-        const rotatedCanvas = rotateCanvas(canvas, 360 - page.rotate);
-        const scaleX = rotatedCanvas.width / pageWidth;
-        const scaleY = rotatedCanvas.height / pageHeight;
-        const crop = {
-            left: (cropRect[0] - left) * scaleX,
-            top: (bottom + pageHeight - cropRect[3]) * scaleY,
-            width: (cropRect[2] - cropRect[0]) * scaleX,
-            height: (cropRect[3] - cropRect[1]) * scaleY,
-        };
-        const croppedCanvas = rotateCanvas(cropCanvas(rotatedCanvas, crop), page.rotate);
-        return croppedCanvas.toDataURL(type, encoderOptions);
+            const rotatedCanvas = rotateCanvas(canvas, 360 - page.rotate);
+            canvases.add(rotatedCanvas);
+            const scaleX = rotatedCanvas.width / pageWidth;
+            const scaleY = rotatedCanvas.height / pageHeight;
+            const crop = {
+                left: (cropRect[0] - left) * scaleX,
+                top: (bottom + pageHeight - cropRect[3]) * scaleY,
+                width: (cropRect[2] - cropRect[0]) * scaleX,
+                height: (cropRect[3] - cropRect[1]) * scaleY,
+            };
+            const cropped = cropCanvas(rotatedCanvas, crop);
+            canvases.add(cropped);
+            const croppedCanvas = rotateCanvas(cropped, page.rotate);
+            canvases.add(croppedCanvas);
+            return croppedCanvas.toDataURL(type, encoderOptions);
+        } finally {
+            for (const temporary of canvases) temporary.width = temporary.height = 0;
+        }
     }
 
     /**
@@ -1050,18 +1126,59 @@ export class PDFPlusLib {
         return isVersionNewerThan(currentVersion, version);
     }
 
-    onDocumentReady(pdfViewer: ObsidianViewer, callback: (doc: PDFDocumentProxy) => any) {
+    onDocumentReady(pdfViewer: ObsidianViewer, callback: (doc: PDFDocumentProxy) => any, component?: Component, onError?: (error: unknown) => any): () => void {
+        let pending: typeof callback | undefined = callback;
+        let pendingError = onError;
+        let parent = component;
+        let task: Component | undefined;
+        let queue: typeof pdfViewer.pdfPlusCallbacksOnDocumentLoaded;
+        const release = () => {
+            if (queue) {
+                const index = queue.indexOf(ready);
+                if (index !== -1) queue.splice(index, 1);
+            }
+            queue = undefined;
+            pending = undefined;
+            pendingError = undefined;
+            parent = undefined;
+            task = undefined;
+        };
+        const cancel = () => {
+            const owner = parent;
+            const child = task;
+            release();
+            if (owner && child) owner.removeChild(child);
+        };
+        const ready = (doc: PDFDocumentProxy) => {
+            const cb = pending;
+            // The native viewer may be iterating this array; only cancellation removes entries.
+            queue = undefined;
+            cancel();
+            return cb?.(doc);
+        };
+        const failed = (error: unknown) => {
+            const cb = pendingError;
+            const wasPending = !!pending;
+            cancel();
+            if (cb) cb(error);
+            else if (wasPending) console.error(error);
+        };
+        if (parent) {
+            if ((parent as Component & { _loaded?: boolean })._loaded === false) {
+                release();
+                return cancel;
+            }
+            task = parent.addChild(new Component());
+            task.register(release);
+        }
         if (pdfViewer.pdfLoadingTask) {
-            pdfViewer.pdfLoadingTask.promise.then((doc) => callback(doc));
-            return;
+            pdfViewer.pdfLoadingTask.promise.then(ready, failed);
+        } else {
+            // The native viewer executes this queue when its document is loaded.
+            queue = pdfViewer.pdfPlusCallbacksOnDocumentLoaded ??= [];
+            queue.push(ready);
         }
-
-        // Callback functions in `pdfPlusCallbacksOnDocumentLoaded` are executed in `pdfViewer.load`.
-        // See `patchObsidianViewer` in src/patchers/pdf-internals.ts.
-        if (!pdfViewer.pdfPlusCallbacksOnDocumentLoaded) {
-            pdfViewer.pdfPlusCallbacksOnDocumentLoaded = [];
-        }
-        pdfViewer.pdfPlusCallbacksOnDocumentLoaded.push(callback);
+        return cancel;
     }
 
     /** Process (possibly) multiline strings cleverly to convert it into a single line string. */

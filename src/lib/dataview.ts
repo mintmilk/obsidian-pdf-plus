@@ -1,4 +1,4 @@
-import { ButtonComponent, Notice, setTooltip, type App, type TFile } from 'obsidian';
+import { Component, ButtonComponent, Notice, setTooltip, type App, type TFile } from 'obsidian';
 
 import type PDFPlus from 'main';
 import { PDFPlusModal } from 'modals';
@@ -36,26 +36,36 @@ const listItemContainsInlineFields = (item: ListItem, app: App, propertyName: st
 
 export const withFilesWithInlineFields = (plugin: PDFPlus, callback: (files: TFile[]) => void) => {
     const app = plugin.app;
+    const owner = plugin.addChild(new Component());
+    let pending: typeof callback | undefined = callback;
+    owner.register(() => { pending = undefined; });
 
     const onDataviewReady = async () => {
+        if (!pending) return;
         const files = await getFilesWithInlineFields(plugin);
-        callback(files);
+        const completed = pending;
+        plugin.removeChild(owner);
+        completed?.(files);
     };
 
     app.workspace.onLayoutReady(() => {
+        if (!pending) return;
         const dvPlugin = app.plugins.plugins.dataview;
-        if (!dvPlugin) return;
+        if (!dvPlugin) {
+            plugin.removeChild(owner);
+            return;
+        }
 
         // @ts-ignore
         if (dvPlugin.index.initialized) {
-            onDataviewReady();
+            void onDataviewReady();
         } else {
             // @ts-ignore
             const ref = app.metadataCache.on('dataview:index-ready', () => {
-                onDataviewReady();
                 app.metadataCache.offref(ref);
+                void onDataviewReady();
             });
-            plugin.registerEvent(ref);
+            owner.registerEvent(ref);
         }
     });
 };

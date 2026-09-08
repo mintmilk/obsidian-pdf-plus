@@ -22,7 +22,8 @@ export class AutoCopyMode extends PDFPlusComponent {
                 ) : null;
 
             if (this.iconEl) {
-                this.registerDomEvent(this.iconEl, 'contextmenu', (evt) => {
+                // The ribbon icon lives for the plugin lifetime, including when auto-copy is off.
+                plugin.registerDomEvent(this.iconEl, 'contextmenu', (evt) => {
                     if (menuShown) return;
 
                     const menu = new Menu();

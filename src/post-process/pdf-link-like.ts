@@ -13,7 +13,7 @@ const annotationLayerComponents = new WeakMap<AnnotationLayerBuilder, { parent: 
 /** PDF.js cancels a builder when discarding its layer, including page-buffer eviction.
  * A zoom that keeps the annotation layer does not cancel it, so its handlers stay live. */
 export function getAnnotationLayerComponent(child: PDFViewerChild, layer: AnnotationLayerBuilder): Component | undefined {
-    const parent = child.component;
+    const parent = child.pdfPlusFileComponent ?? child.component;
     if (!parent || child.unloaded || (parent as Component & { _loaded?: boolean })._loaded === false || layer._cancelled) return;
 
     const existing = annotationLayerComponents.get(layer);
@@ -328,13 +328,13 @@ export class PDFOutlineItemPostProcessor extends PDFDestinationHolderPostProcess
 
     static readonly HOVER_LINK_SOURCE_ID = 'pdf-plus-outline';
 
-    protected constructor(plugin: PDFPlus, child: PDFViewerChild, item: PDFOutlineTreeNode) {
-        super(plugin, child, item.selfEl);
+    protected constructor(plugin: PDFPlus, child: PDFViewerChild, item: PDFOutlineTreeNode, component = child.component) {
+        super(plugin, child, item.selfEl, component);
         this.item = item;
     }
 
-    static registerEvents(plugin: PDFPlus, child: PDFViewerChild, item: PDFOutlineTreeNode) {
-        return new PDFOutlineItemPostProcessor(plugin, child, item);
+    static registerEvents(plugin: PDFPlus, child: PDFViewerChild, item: PDFOutlineTreeNode, component = child.component) {
+        return new PDFOutlineItemPostProcessor(plugin, child, item, component);
     }
 
     getDest() {
@@ -364,8 +364,8 @@ export class PDFOutlineItemPostProcessor extends PDFDestinationHolderPostProcess
 export class PDFThumbnailItemPostProcessor extends PDFLinkLikePostProcessor {
     static readonly HOVER_LINK_SOURCE_ID = 'pdf-plus-thumbnail';
 
-    static registerEvents(plugin: PDFPlus, child: PDFViewerChild) {
-        return new PDFThumbnailItemPostProcessor(plugin, child, child.pdfViewer.pdfThumbnailViewer.container);
+    static registerEvents(plugin: PDFPlus, child: PDFViewerChild, component = child.component) {
+        return new PDFThumbnailItemPostProcessor(plugin, child, child.pdfViewer.pdfThumbnailViewer.container, component);
     }
 
     async getLinkText(evt: MouseEvent) {

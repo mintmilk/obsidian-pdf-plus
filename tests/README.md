@@ -68,3 +68,34 @@ component tree after each pass, not only after closing the file. Also exercise l
 and hover popups after a zoom that preserves the annotation layer. Compare a core-only
 run at the same scale and canvas dimensions before attributing native/GPU memory peaks
 to plugin listeners; record settled and post-GC samples separately.
+
+The broader lifecycle audit also covers:
+
+- PDF loading failures, cancellation, owned Blob URLs and temporary render canvases;
+  successful borrowed documents and canvases remain owned by their callers.
+- Cropped embed replacement, queued/in-flight cancellation, image-load listeners,
+  and unloading plugin-owned embeds when the plugin is disabled.
+- Per-file event owners on same-viewer reload, annotation Markdown popup owners,
+  pending initialization, PageUp/PageDown bindings and page-sync debounce cancellation.
+- Native context-menu IPC timeouts, failed/empty menus, and backlink pane load races.
+- Modal reopen/close, repeated hover/rectangle selection, toolbar replacement,
+  delayed settings rendering, native drag/drop and popout document listeners.
+- Bibliography loading, cancelled AnyStyle processes including late spawn errors,
+  command-owned temporary PDFs, live selection caches and bounded font verdicts.
+- Deferred Dataview/UI results, auto-paste/sidebar waits and disabled or closed Vim
+  helpers. These are source regressions, not full integrations of third-party services.
+- Deferred static-image exports use weak page references: an unpasted historical
+  copy must not keep a closed viewer alive, and a later matching paste can reload
+  the PDF, generate the image and destroy its temporary document.
+- Clipboard matching retains SHA-256 fingerprints instead of complete copied
+  strings, including Base64 image embeds. Immediate and historical paste, line
+  ending normalization, hashing failures and out-of-order completion are covered.
+
+Some tests use real garbage collection in a subprocess in addition to resource
+counts. Keep Component doubles aligned with Obsidian's native unload order:
+mark unloaded, unload children, run registered cleanups, then call `onunload`.
+Always test the success path as well as cancellation to avoid fixing retention by
+silently dropping requested work. Paste-history tracking intentionally retains
+fingerprints and deferred tasks until the next paste or plugin unload; preserving
+arbitrary clipboard history does not imply that this pending metadata has a fixed
+size. It must not retain full copied images or their source PDF viewers.

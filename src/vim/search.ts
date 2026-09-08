@@ -1,4 +1,4 @@
-import { debounce } from 'obsidian';
+import { Component, debounce } from 'obsidian';
 
 import { VimBindings } from './vim';
 import { isTargetHTMLElement } from 'utils';
@@ -10,9 +10,22 @@ export class VimSearch {
     vim: VimBindings;
     isActive = false;
     isForward = true;
+    private timers = new Set<ReturnType<typeof setTimeout>>();
 
     constructor(vim: VimBindings) {
         this.vim = vim;
+        vim.register(() => {
+            this.timers.forEach(timer => clearTimeout(timer));
+            this.timers.clear();
+        });
+    }
+
+    private defer(callback: () => void, delay: number) {
+        const timer = setTimeout(() => {
+            this.timers.delete(timer);
+            callback();
+        }, delay);
+        this.timers.add(timer);
     }
 
     get settings() {
@@ -50,7 +63,7 @@ export class VimSearch {
     }
 
     restoreSelectionAndExtendToMatch() {
-        setTimeout(() => {
+        this.defer(() => {
             let selection = this.vim.doc.getSelection();
             if (!selection || selection.isCollapsed) {
                 this.vim.visualMode.restorePreviousSelection();
@@ -82,14 +95,21 @@ export class VimSearch {
         findBar.searchSettings.highlightAll = this.hlsearch;
         this.lib.updateSearchSettingsUI(findBar);
 
+        const session = this.vim.addChild(new Component());
         const changeCallback = findBar.searchComponent.changeCallback;
+        session.register(() => {
+            this.isActive = false;
+            findBar.searchComponent.changeCallback = changeCallback;
+        });
         if (this.incsearch) {
             // The original `changeCallback` runs `findBar.dispatchEvent('')`,
             // which scrolls the very first match in the ENTIRE DOCUMENT into the view.
             // The following `'again'` is to focus on the nearest match from the current position (might be suboptimal).
-            findBar.searchComponent.onChange(debounce(() => {
+            const onChange = debounce(() => {
                 findBar.dispatchEvent('again');
-            }, 250, true));
+            }, 250, true);
+            findBar.searchComponent.onChange(onChange);
+            session.register(() => onChange.cancel());
         } else {
             findBar.searchComponent.onChange(() => { });
         }
@@ -115,18 +135,15 @@ export class VimSearch {
             }
         };
 
-        findBar.searchComponent.inputEl.addEventListener('keypress', onSearchKeyPress, true);
-
-        this.lib.registerPDFEvent('findbarclose', findBar.eventBus, null, () => {
-            this.isActive = false;
-            findBar.searchComponent.inputEl.removeEventListener('keypress', onSearchKeyPress, true);
-            if (changeCallback) findBar.searchComponent.onChange(changeCallback);
-        });
+        session.registerDomEvent(findBar.searchComponent.inputEl, 'keypress', onSearchKeyPress, true);
+        this.lib.registerPDFEvent('findbarclose', findBar.eventBus, session, () => {
+            this.vim.removeChild(session);
+        }, { once: true });
     }
 
     findAndSelectNextMatch(n?: number, sameDirection?: boolean) {
         this.findNext(n, sameDirection);
-        setTimeout(() => {
+        this.defer(() => {
             const selection = this.vim.doc.getSelection();
             if (!selection) return;
 

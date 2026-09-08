@@ -1,4 +1,4 @@
-import { Setting, TFile, TextAreaComponent, MarkdownRenderer, RGB, ColorComponent, DropdownComponent } from 'obsidian';
+import { Setting, TFile, TextAreaComponent, MarkdownRenderer, RGB, ColorComponent, DropdownComponent, Component } from 'obsidian';
 
 import PDFPlus from 'main';
 import { getModifierNameInPlatform, hexToRgb, hookInternalLinkMouseEventHandlers, rgbToHex } from 'utils';
@@ -43,6 +43,7 @@ export class PDFAnnotationEditModal extends PDFAnnotationModal {
     previewEl: HTMLElement | null;
     // "Save" and "Cancel" buttons
     buttonContainerEl: HTMLElement;
+    private previewComponent: Component | undefined;
 
     static isSubtypeSupported(subtype: string): subtype is typeof PDFAnnotationEditModal.supportedSubtypes[number] {
         return (PDFAnnotationEditModal.supportedSubtypes as unknown as string[]).includes(subtype);
@@ -348,8 +349,10 @@ export class PDFAnnotationEditModal extends PDFAnnotationModal {
 
     async onOpen() {
         super.onOpen();
+        const component = this.component;
         this.titleEl.setText(`${this.plugin.manifest.name}: edit annotation contents`);
         await this.readOldValues();
+        if (!this.isCurrentOpen(component)) return;
 
         for (const key of this.supportedKeys) {
             switch (key) {
@@ -376,18 +379,29 @@ export class PDFAnnotationEditModal extends PDFAnnotationModal {
     }
 
     async showEditor() {
+        if (this.previewComponent) this.component.removeChild(this.previewComponent);
+        this.previewComponent = undefined;
         this.editorEl?.show();
         this.previewEl?.hide();
     }
 
     async showPreview() {
         if (this.editorEl && this.previewEl) {
+            const component = this.component;
+            if (!this.isCurrentOpen(component)) return;
+            if (this.previewComponent) component.removeChild(this.previewComponent);
+            const previewComponent = component.addChild(new Component());
+            this.previewComponent = previewComponent;
+            previewComponent.register(() => {
+                if (this.previewComponent === previewComponent) this.previewComponent = undefined;
+            });
             this.previewEl.setCssStyles({
                 width: `${this.editorEl.clientWidth}px`,
                 height: `${this.editorEl.clientHeight}px`
             });
             this.previewEl.empty();
-            await MarkdownRenderer.render(this.app, this.textarea?.getValue() ?? '', this.previewEl, '', this.component);
+            await MarkdownRenderer.render(this.app, this.textarea?.getValue() ?? '', this.previewEl, '', previewComponent);
+            if (!this.isCurrentOpen(component) || this.previewComponent !== previewComponent) return;
             hookInternalLinkMouseEventHandlers(this.app, this.previewEl, this.file.path);
             this.editorEl.hide();
             this.previewEl.show();

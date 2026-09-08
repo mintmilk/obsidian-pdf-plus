@@ -1,4 +1,4 @@
-import { ButtonComponent, HoverPopover, HoverParent, Platform, FileSystemAdapter, Notice, ExtraButtonComponent, Events } from 'obsidian';
+import { ButtonComponent, Component, HoverPopover, HoverParent, Platform, FileSystemAdapter, Notice, ExtraButtonComponent, Events } from 'obsidian';
 import { PDFDocumentProxy } from 'pdfjs-dist';
 
 import PDFPlus from 'main';
@@ -19,6 +19,16 @@ export type AnystyleJson = Partial<{
 }>;
 
 
+// A killed process can still emit a deferred spawn error before its final close.
+// These terminal listeners retain only the process, never a bibliography manager or PDF.
+function handleCancelledProcess(process: import('child_process').ChildProcess) {
+    const ignoreError = () => {};
+    process.on('error', ignoreError);
+    process.once('close', () => process.removeListener('error', ignoreError));
+    process.kill();
+}
+
+
 export class BibliographyManager extends PDFPlusComponent {
     static readonly HOVER_LINK_SOURCE_ID = 'pdf-plus-citation-link';
 
@@ -27,6 +37,8 @@ export class BibliographyManager extends PDFPlusComponent {
     destIdToParsedBib: Map<string, AnystyleJson>;
     events: Events;
     initialized: boolean;
+    private active = false;
+    private generation = 0;
 
     constructor(plugin: PDFPlus, child: PDFViewerChild) {
         super(plugin);
@@ -35,7 +47,19 @@ export class BibliographyManager extends PDFPlusComponent {
         this.destIdToParsedBib = new Map();
         this.events = new Events();
         this.initialized = false;
-        this.init();
+    }
+
+    onload() {
+        this.active = true;
+        this.initialized = false;
+        void this.init(++this.generation);
+    }
+
+    onunload() {
+        this.active = false;
+        this.generation++;
+        this.destIdToBibText.clear();
+        this.destIdToParsedBib.clear();
     }
 
     isEnabled() {
@@ -49,31 +73,46 @@ export class BibliographyManager extends PDFPlusComponent {
             );
     }
 
-    private async init() {
-        if (this.isEnabled()) {
-            await this.extractBibText();
-            await this.parseBibText();
+    private async init(generation: number) {
+        try {
+            if (this.isEnabled()) {
+                await this.extractBibText();
+                if (!this.active || generation !== this.generation) return;
+                await this.parseBibText();
+            }
+        } catch (error) {
+            if (this.active && generation === this.generation) console.error(`${this.plugin.manifest.name}: Failed to load bibliography.`, error);
         }
-        this.initialized = true;
+        if (this.active && generation === this.generation) this.initialized = true;
     }
 
     private async extractBibText() {
-        return new Promise<void>((resolve) => {
+        return new Promise<void>((resolve, reject) => {
+            let cancelExtraction: (() => void) | undefined;
+            this.register(() => {
+                cancelExtraction?.();
+                cancelExtraction = undefined;
+                resolve();
+            });
             this.lib.onDocumentReady(this.child.pdfViewer, (doc) => {
-                new BibliographyTextExtractor(this.plugin, doc)
+                if (!this.active) return resolve();
+                const extractor = new BibliographyTextExtractor(this.plugin, doc)
                     .onExtracted((destId, bibText) => {
+                        if (!this.active) return;
                         this.destIdToBibText.set(destId, bibText);
                         this.events.trigger('extracted', destId, bibText);
-                    })
-                    .extract()
-                    .then(resolve);
-            });
+                    });
+                cancelExtraction = () => extractor.cancel();
+                extractor.extract().then(resolve, reject).finally(() => { cancelExtraction = undefined; });
+            }, this, reject);
         });
     }
 
     private async parseBibText() {
+        const generation = this.generation;
         const text = Array.from(this.destIdToBibText.values()).join('\n');
         const parsed = await this.parseBibliographyText(text);
+        if (!this.active || generation !== this.generation) return;
         if (parsed) {
             const destIds = Array.from(this.destIdToBibText.keys());
             for (let i = 0; i < parsed.length; i++) {
@@ -94,7 +133,7 @@ export class BibliographyManager extends PDFPlusComponent {
         };
 
         if (this.plugin.requireModKeyForLinkHover(BibliographyManager.HOVER_LINK_SOURCE_ID)) {
-            onModKeyPress(event, targetEl, spawnBibPopover);
+            onModKeyPress(event, targetEl, spawnBibPopover, this);
         } else {
             spawnBibPopover();
         }
@@ -124,80 +163,91 @@ export class BibliographyManager extends PDFPlusComponent {
     /** Parse a bibliography text using Anystyle. */
     async parseBibliographyText(text: string): Promise<AnystyleJson[] | null> {
         const { app, plugin, settings } = this;
-
         const anystylePath = settings.anystylePath;
-        if (!anystylePath) return null;
-
         const anystyleDirPath = plugin.getAnyStyleInputDir();
-        // Node.js is available only in the desktop app
-        if (Platform.isDesktopApp && app.vault.adapter instanceof FileSystemAdapter && anystyleDirPath) {
-            // Anystyle only accepts a file as input, so we need to write the text to a file.
-            // We store the file under the `anystyle` folder in the plugin's directory to avoid cluttering the vault.
-            const anystyleDirFullPath = app.vault.adapter.getFullPath(anystyleDirPath);
-            await FileSystemAdapter.mkdir(anystyleDirFullPath);
+        const generation = this.generation;
+        const isActive = () => this.active && generation === this.generation;
+        if (!this.active || !anystylePath || !Platform.isDesktopApp
+            || !(app.vault.adapter instanceof FileSystemAdapter) || !anystyleDirPath) return null;
 
-            const anystyleInputPath = anystyleDirPath + `/${genId()}.txt`;
-            const anystyleInputFullPath = app.vault.adapter.getFullPath(anystyleInputPath);
-            await app.vault.adapter.write(anystyleInputPath, text);
-            // Clean up the file when this PDF viewer is unloaded
-            this.register(() => app.vault.adapter.remove(anystyleInputPath));
+        const adapter = app.vault.adapter;
+        const inputPath = anystyleDirPath + `/${genId()}.txt`;
+        let inputCreated = false;
+        try {
+            await FileSystemAdapter.mkdir(adapter.getFullPath(anystyleDirPath));
+            if (!isActive()) return null;
+            inputCreated = true;
+            await adapter.write(inputPath, text);
+            if (!isActive()) return null;
 
-            // eslint-disable-next-line @typescript-eslint/no-require-imports 
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
             const { spawn } = require('child_process') as typeof import('child_process');
-
-            return new Promise<any>((resolve) => {
-                const anystyleProcess = spawn(anystylePath, ['parse', anystyleInputFullPath]);
+            return await new Promise<AnystyleJson[] | null>((resolve) => {
+                const process = spawn(anystylePath, ['parse', adapter.getFullPath(inputPath)]);
+                const task = this.addChild(new Component());
+                let settled = false;
                 let resultJson = '';
-                anystyleProcess.stdout.on('data', (resultBuffer: Buffer | null) => {
-                    if (resultBuffer) {
-                        resultJson += resultBuffer.toString();
-                        return;
+                const removeListeners = () => {
+                    process.stdout.removeListener('data', onData);
+                    process.removeListener('error', onError);
+                    process.removeListener('close', onClose);
+                };
+                const finish = (result: AnystyleJson[] | null) => {
+                    if (settled) return;
+                    settled = true;
+                    removeListeners();
+                    this.removeChild(task);
+                    resolve(result);
+                };
+                const onData = (buffer: Buffer | null) => {
+                    if (buffer) resultJson += buffer.toString();
+                };
+                const onError = (error: Error & { code?: string }) => {
+                    if (isActive() && error.code === 'ENOENT') {
+                        const notice = new Notice(`${plugin.manifest.name}: AnyStyle not found at the path "${anystylePath}".`, 8000);
+                        notice.noticeEl.appendText(' Click ');
+                        notice.noticeEl.createEl('a', { text: 'here' }, (anchorEl) => {
+                            anchorEl.addEventListener('click', () => plugin.openSettingTab().scrollTo('anystylePath'));
+                        });
+                        notice.noticeEl.appendText(' to update the path.');
                     }
-                    resolve(null);
-                });
-                anystyleProcess.on('error', (err: Error & { code: string }) => {
-                    if ('code' in err && err.code === 'ENOENT') {
-                        const msg = `${plugin.manifest.name}: AnyStyle not found at the path "${anystylePath}".`;
-                        if (plugin.settings.anystylePath) {
-                            const notice = new Notice(msg, 8000);
-                            notice.noticeEl.appendText(' Click ');
-                            notice.noticeEl.createEl('a', { text: 'here' }, (anchorEl) => {
-                                anchorEl.addEventListener('click', () => {
-                                    plugin.openSettingTab().scrollTo('anystylePath');
-                                });
-                            });
-                            notice.noticeEl.appendText(' to update the path.');
-                            console.error(msg);
-                        }
-                        else console.warn(msg);
-                        return resolve(null);
-                    }
-                });
-                anystyleProcess.on('close', (code) => {
-                    if (code) return resolve(null);
-
-                    const results = JSON.parse(resultJson);
-
-                    if (Array.isArray(results)) {
-                        // Add 'year' entry to each result
+                    finish(null);
+                };
+                const onClose = (code: number | null) => {
+                    if (code) return finish(null);
+                    try {
+                        const results = JSON.parse(resultJson);
+                        if (!Array.isArray(results)) return finish(null);
                         for (const result of results) {
                             for (const date of result.date ?? []) {
-                                const yearMatch = date.match(/\d{4}/);
-                                if (yearMatch) {
-                                    result.year = yearMatch[0];
+                                const year = date.match(/\d{4}/)?.[0];
+                                if (year) {
+                                    result.year = year;
                                     break;
                                 }
                             }
                         }
-                        resolve(results);
+                        finish(results);
+                    } catch {
+                        finish(null);
                     }
-
-                    resolve(null);
+                };
+                task.register(() => {
+                    if (settled) return;
+                    settled = true;
+                    removeListeners();
+                    try { handleCancelledProcess(process); }
+                    finally { resolve(null); }
                 });
+                process.stdout.on('data', onData);
+                process.on('error', onError);
+                process.on('close', onClose);
+            });
+        } finally {
+            if (inputCreated) await adapter.remove(inputPath).catch((error) => {
+                if (error?.code !== 'ENOENT') throw error;
             });
         }
-
-        return null;
     }
 
 
@@ -214,6 +264,7 @@ class BibliographyTextExtractor {
     doc: PDFDocumentProxy;
     pageRefToTextContentItemsPromise: Record<string, Promise<TextContentItem[]> | undefined>;
     onExtractedCallback?: (destId: string, bibText: string) => any;
+    private cancelled = false;
 
     constructor(plugin: PDFPlus, doc: PDFDocumentProxy) {
         this.plugin = plugin;
@@ -226,8 +277,15 @@ class BibliographyTextExtractor {
         return this;
     }
 
+    cancel() {
+        this.cancelled = true;
+        this.onExtractedCallback = undefined;
+        this.pageRefToTextContentItemsPromise = {};
+    }
+
     async extract() {
         const dests = await this.doc.getDestinations();
+        if (this.cancelled) return;
         const promises: Promise<void>[] = [];
         for (const destId in dests) {
             if (this.plugin.lib.isCitationId(destId)) {
@@ -249,11 +307,14 @@ class BibliographyTextExtractor {
     /** Get `TextContentItem`s contained in the specified page. This method avoids fetching the same info multiple times. */
     async getTextContentItemsFromPageRef(pageRef: PDFJsDestArray[0]) {
         const refStr = JSON.stringify(pageRef);
+        if (this.cancelled) return [];
 
         return this.pageRefToTextContentItemsPromise[refStr] ?? (
             this.pageRefToTextContentItemsPromise[refStr] = (async () => {
                 const pageNumber = await this.doc.getPageIndex(pageRef) + 1;
+                if (this.cancelled) return [];
                 const page = await this.doc.getPage(pageNumber);
+                if (this.cancelled) return [];
                 const items = (await page.getTextContent()).items as TextContentItem[];
                 return items;
             })()

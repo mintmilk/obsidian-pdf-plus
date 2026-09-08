@@ -1,4 +1,6 @@
-import { Editor, EditorRange, MarkdownFileInfo, MarkdownView, Notice, TFile } from 'obsidian';
+import { Component, Editor, EditorRange, MarkdownFileInfo, MarkdownView, Notice, TFile } from 'obsidian';
+import { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
+import { sha256 } from '@noble/hashes/sha2.js';
 
 import { PDFPlusLibSubmodule } from './submodule';
 import { PDFPlusTemplateProcessor } from 'template';
@@ -15,8 +17,26 @@ export type AutoFocusTarget =
     | 'last-paste-then-last-active-and-open'
     | 'last-active-and-open-then-last-paste';
 
+// Kept outside listener factories so a settled fingerprint never retains its input.
+async function fingerprintClipboardText(text: string): Promise<string> {
+    const bytes = new TextEncoder().encode(text.replace(/\r\n/g, '\n'));
+    let digest: Uint8Array;
+    try {
+        digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', bytes));
+    } catch {
+        // Browser-compatible fallback for unavailable or rejected WebCrypto operations.
+        digest = sha256(bytes);
+    }
+    return Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+type PasteFingerprint = { fingerprint: Promise<string>, sequence: number, saveScheduled?: boolean };
+
 export class copyLinkLib extends PDFPlusLibSubmodule {
     statusDurationMs = 2000;
+    private pasteFingerprints = new WeakMap<ClipboardEvent, PasteFingerprint>();
+    private pasteSequence = 0;
+    private lastMatchedPasteSequence = 0;
 
     getPageAndTextRangeFromSelection(selection?: Selection | null): { page: number, selection?: { beginIndex: number, beginOffset: number, endIndex: number, endOffset: number } } | null {
         selection = selection ?? activeWindow.getSelection();
@@ -431,7 +451,7 @@ export class copyLinkLib extends PDFPlusLibSubmodule {
 
             (async () => {
                 let text = embedLink;
-                let page = child.getPage(pageNumber).pdfPage;
+                const page = child.getPage(pageNumber).pdfPage;
                 const extension = this.settings.rectImageExtension;
 
                 if (!this.settings.rectEmbedStaticImage) {
@@ -446,22 +466,10 @@ export class copyLinkLib extends PDFPlusLibSubmodule {
 
                     await navigator.clipboard.writeText(text);
 
-                    const createImageFile = async () => {
-                        // I don't know why, but if the PDF viewer is in a popup window (i.e. !== window),
-                        // font rendering fails and characters are rendered as boxes.
-                        // Therefore, we need to load the PDF document again.
-                        // https://github.com/RyotaUshio/obsidian-pdf-plus/issues/323
-                        //
-                        // Also, we also have to reload the PDF document when the PDF page is already destroyed
-                        // (which happens if the PDF viewer is already closed)
-                        // https://github.com/RyotaUshio/obsidian-pdf-plus/issues/326
-                        if (child.containerEl.win !== window || page.destroyed) {
-                            const doc = await this.lib.loadPDFDocument(file);
-                            page = await doc.getPage(pageNumber);
-                        }
-                        const buffer = await this.lib.pdfPageToImageArrayBuffer(page, { type: `image/${extension}`, cropRect: rect, renderParams: this.lib.getOptionalRenderParameters() });
-                        return await this.app.vault.createBinary(imagePath, buffer);
-                    };
+                    const createImageFile = this.createDeferredImageExport(
+                        file, pageNumber, [...rect], extension, imagePath,
+                        child.containerEl.win !== window, new WeakRef(page),
+                    );
                     if (autoPaste) {
                         await createImageFile();
                         this.onCopyFinish(text);
@@ -486,6 +494,30 @@ export class copyLinkLib extends PDFPlusLibSubmodule {
         }
 
         return true;
+    }
+
+    // Build the deferred paste callback outside the selection/copy scope, so clipboard
+    // history retains only a light export request rather than its child/viewer/palette.
+    private createDeferredImageExport(file: TFile, pageNumber: number, rect: Rect, extension: string, imagePath: string, forceReload: boolean, pageRef: WeakRef<PDFPageProxy>) {
+        return async () => {
+            let page = pageRef.deref();
+            let ownedDocument: PDFDocumentProxy | undefined;
+            try {
+                // Popout fonts require an independent document (#323). The weak page may
+                // also be gone or destroyed by the time a historical entry is pasted (#326).
+                if (forceReload || !page || page.destroyed) {
+                    ownedDocument = await this.lib.loadPDFDocument(file);
+                    page = await ownedDocument.getPage(pageNumber);
+                }
+                const buffer = await this.lib.pdfPageToImageArrayBuffer(page, {
+                    type: `image/${extension}`, cropRect: rect, renderParams: this.lib.getOptionalRenderParameters(),
+                });
+                return await this.app.vault.createBinary(imagePath, buffer);
+            } finally {
+                // The active viewer owns its document; only release our separate copy.
+                await ownedDocument?.destroy();
+            }
+        };
     }
 
     copyLinkToSearch(checking: boolean, child: PDFViewerChild, pageNumber: number, query: string, autoPaste?: boolean, sourcePath?: string): boolean {
@@ -572,15 +604,39 @@ export class copyLinkLib extends PDFPlusLibSubmodule {
 
         let isResolved = false;
 
-        return new Promise<boolean>((resolve) => {
+        return new Promise<boolean>((resolve, reject) => {
+            const owner = this.plugin.addChild(new Component());
+            let keepHoverWait = false;
+            const finish = (success: boolean) => {
+                if (isResolved) return;
+                isResolved = true;
+                keepHoverWait = success;
+                resolve(success);
+                this.plugin.removeChild(owner);
+            };
+            owner.register(() => {
+                isResolved = true;
+                if (!keepHoverWait) cancelHoverWait?.();
+                activeWindow.clearTimeout(timer);
+                resolve(false);
+            });
             const eventRef = this.app.workspace.on('file-open', async (file) => {
                 if (file && file.extension === 'md') {
                     this.app.workspace.offref(eventRef);
-                    await this.pasteTextToFile(text, file, true);
-                    this.plugin.lastPasteFile = file;
-                    resolve(true);
+                    if (timer !== undefined) activeWindow.clearTimeout(timer);
+                    try {
+                        await this.pasteTextToFile(text, file, true);
+                        if (isResolved) return;
+                        this.lastMatchedPasteSequence = this.pasteSequence = (this.pasteSequence ?? 0) + 1;
+                        this.plugin.lastPasteFile = file;
+                        finish(true);
+                    } catch (error) {
+                        reject(error);
+                        this.plugin.removeChild(owner);
+                    }
                 }
             });
+            owner.registerEvent(eventRef);
 
             // Hook a one-time active-leaf-change event handler before executing the command.
             // This is a workaround for the problem where the `closeHoverEditorWhenLostFocus` option
@@ -588,17 +644,15 @@ export class copyLinkLib extends PDFPlusLibSubmodule {
             const hoverEditorAPI = this.lib.workspace.hoverEditor;
             // TypeScript complains for some reason that I don't understand
             // @ts-ignore
-            this.plugin.registerOneTimeEvent(this.app.workspace, 'active-leaf-change', (leaf) => {
+            const cancelHoverWait = this.plugin.registerOneTimeEvent(this.app.workspace, 'active-leaf-change', (leaf) => {
                 if (leaf && hoverEditorAPI.isHoverEditorLeaf(leaf)) {
                     hoverEditorAPI.postProcessHoverEditorLeaf(leaf);
                 }
             });
 
-            this.app.commands.executeCommandById(command.id);
-
             // For commands such as "Create new note", the file-open will be triggered before long.
             // However, for commands such as "Quick switcher: Open quick switcher", the file-open will be triggered after a long time.
-            activeWindow.setTimeout(() => {
+            const timer = activeWindow.setTimeout(() => {
                 if (!isResolved) {
                     const { noticeEl } = new Notice(`${this.plugin.manifest.name}: Could not find the auto-paste target markdown file within ${this.settings.autoPasteTargetDialogTimeoutSec} seconds.`);
                     noticeEl.appendText(' Click ');
@@ -610,10 +664,15 @@ export class copyLinkLib extends PDFPlusLibSubmodule {
                     });
                     noticeEl.appendText(' to change the timeout duration.');
 
-                    this.app.workspace.offref(eventRef);
-                    resolve(false);
+                    finish(false);
                 }
             }, this.settings.autoPasteTargetDialogTimeoutSec * 1000);
+            try {
+                this.app.commands.executeCommandById(command.id);
+            } catch (error) {
+                reject(error);
+                this.plugin.removeChild(owner);
+            }
         })
             .then((success) => {
                 isResolved = true;
@@ -833,29 +892,51 @@ export class copyLinkLib extends PDFPlusLibSubmodule {
     }
 
     watchPaste(text: string, onPaste?: () => any) {
-        // watch for a manual paste for updating this.lastPasteFile
-        this.plugin.registerOneTimeEvent(this.app.workspace, 'editor-paste', (evt: ClipboardEvent, editor: Editor, info: MarkdownView | MarkdownFileInfo) => {
-            if (info.file?.extension !== 'md') return;
-            if (!evt.clipboardData) return;
+        // Install synchronously, even while hashing, so an immediate paste cannot be missed.
+        // Preserve all clipboard-history actions without retaining base64 image strings.
+        this.plugin.registerOneTimeEvent(this.app.workspace, 'editor-paste',
+            this.createPasteHandler(fingerprintClipboardText(text), onPaste));
+    }
 
-            const clipboardText = evt.clipboardData.getData('text/plain');
-            // Get rid of the influences of the OS-dependent line endings
-            // https://github.com/RyotaUshio/obsidian-pdf-plus/issues/54
-            const clipboardTextNormalized = clipboardText.replace(/\r\n/g, '\n');
-            const copiedTextNormalized = text.replace(/\r\n/g, '\n');
+    private getPasteFingerprint(evt: ClipboardEvent): PasteFingerprint {
+        const fingerprints = this.pasteFingerprints ??= new WeakMap();
+        let paste = fingerprints.get(evt);
+        if (!paste) {
+            paste = {
+                // Read clipboardData during the event, before any await.
+                fingerprint: fingerprintClipboardText(evt.clipboardData!.getData('text/plain')),
+                sequence: this.pasteSequence = (this.pasteSequence ?? 0) + 1,
+            };
+            fingerprints.set(evt, paste);
+        }
+        return paste;
+    }
 
-            if (clipboardTextNormalized === copiedTextNormalized) {
-                this.plugin.lastPasteFile = info.file;
-                onPaste?.();
-            }
-
-            if (info instanceof MarkdownView) {
-                // MarkdownView's file saving is debounced, so we need to
-                // explicitly save the new data right after pasting so that
-                // the backlink highlight will be visibile as soon as possible.
+    private createPasteHandler(copiedFingerprint: Promise<string>, onPaste?: () => any) {
+        return async (evt: ClipboardEvent, editor: Editor, info: MarkdownView | MarkdownFileInfo) => {
+            const file = info.file;
+            if (file?.extension !== 'md' || !evt.clipboardData) return;
+            const paste = this.getPasteFingerprint(evt);
+            // Keep Obsidian's debounced-save workaround independent of digest timing/failure.
+            if (info instanceof MarkdownView && !paste.saveScheduled) {
+                paste.saveScheduled = true;
                 setTimeout(() => info.save());
             }
-        });
+            try {
+                const [copied, pasted] = await Promise.all([copiedFingerprint, paste.fingerprint]);
+                if (copied !== pasted) return;
+                // An unrelated paste must not suppress an older match; among matches, newest wins.
+                if ((this.plugin as unknown as { _loaded?: boolean })._loaded !== false
+                    && paste.sequence >= (this.lastMatchedPasteSequence ?? 0)) {
+                    this.lastMatchedPasteSequence = paste.sequence;
+                    this.plugin.lastPasteFile = file;
+                }
+                // Pasting committed this action, even if a later paste or plugin unload follows.
+                await onPaste?.();
+            } catch (error) {
+                console.error('PDF++: Failed to finish a clipboard paste action.', error);
+            }
+        };
     }
 
     onCopyFinish(text: string, onPaste?: () => any) {

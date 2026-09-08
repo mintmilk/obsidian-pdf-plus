@@ -620,6 +620,7 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 	headerContainerEl: HTMLElement;
 
 	events = new Events();
+	private markdownOwners = new WeakMap<HTMLElement, Component>();
 
 	constructor(public plugin: PDFPlus) {
 		super(plugin.app, plugin);
@@ -1149,12 +1150,18 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 	}
 
 	async renderMarkdown(lines: string[] | string, el: HTMLElement) {
-		this.promises.push(this._renderMarkdown(lines, el));
+		const component = this.markdownOwners.get(el) ?? this.component;
+		this.markdownOwners.set(el, component);
+		if (component !== this.component || (component as Component & { _loaded?: boolean })._loaded === false) return;
+		const promise = this._renderMarkdown(lines, el, component);
+		this.promises.push(promise);
 		el.addClass('markdown-rendered');
+		await promise;
 	}
 
-	async _renderMarkdown(lines: string[] | string, el: HTMLElement) {
-		await MarkdownRenderer.render(this.app, Array.isArray(lines) ? lines.join('\n') : lines, el, '', this.component);
+	async _renderMarkdown(lines: string[] | string, el: HTMLElement, component = this.component) {
+		await MarkdownRenderer.render(this.app, Array.isArray(lines) ? lines.join('\n') : lines, el, '', component);
+		if (component !== this.component || (component as Component & { _loaded?: boolean })._loaded === false) return;
 		if (el.childNodes.length === 1 && el.firstChild instanceof HTMLParagraphElement) {
 			el.replaceChildren(...el.firstChild.childNodes);
 		}
@@ -1584,6 +1591,7 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 
 	/** Refresh the setting tab and then scroll back to the original position. */
 	redisplay() {
+		if ((this.component as Component & { _loaded?: boolean })._loaded === false) return;
 		const scrollTop = this.containerEl.scrollTop;
 		this.display();
 		this.containerEl.scroll({ top: scrollTop });

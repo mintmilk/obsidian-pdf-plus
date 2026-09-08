@@ -8,13 +8,16 @@ import { SidebarView } from 'pdfjs-enums';
 type OutlineCommand = (outline: PDFOutlineViewer, n?: number) => any;
 
 export class VimOutlineMode extends VimBindingsMode {
+    private loadGeneration = 0;
     constructor(vim: VimBindings) {
         super(vim);
         this.defineKeymaps();
     }
 
     onload() {
+        const generation = ++this.loadGeneration;
         this.viewer.then((child) => {
+            if (generation !== this.loadGeneration || child.unloaded) return;
             this.lib.registerPDFEvent('sidebarviewchanged', child.pdfViewer.eventBus, this, ({ view }) => {
                 if (view === SidebarView.OUTLINE) {
                     this.vim.enterOutlineMode();
@@ -31,6 +34,10 @@ export class VimOutlineMode extends VimBindingsMode {
                 }
             });
         });
+    }
+
+    onunload() {
+        this.loadGeneration++;
     }
 
     defineKeymaps() {

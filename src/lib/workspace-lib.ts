@@ -1,4 +1,4 @@
-import { HoverParent, MarkdownView, OpenViewState, PaneType, Platform, Pos, TFile, View, WorkspaceItem, WorkspaceLeaf, WorkspaceSidedock, WorkspaceSplit, WorkspaceTabs, parseLinktext, requireApiVersion } from 'obsidian';
+import { Component, HoverParent, MarkdownView, OpenViewState, PaneType, Platform, Pos, TFile, View, WorkspaceItem, WorkspaceLeaf, WorkspaceSidedock, WorkspaceSplit, WorkspaceTabs, parseLinktext, requireApiVersion } from 'obsidian';
 
 import { PDFPlusLibSubmodule } from './submodule';
 import { BacklinkView, CanvasView, ExcalidrawView, PDFEmbed, PDFView, PDFViewerChild, PDFViewerComponent } from 'typings';
@@ -32,6 +32,7 @@ export function isExtendedPaneType(arg: string): arg is ExtendedPaneType {
 
 export class WorkspaceLib extends PDFPlusLibSubmodule {
     hoverEditor: HoverEditorLib;
+    private sidebarHideOwners = new WeakMap<object, Component>();
 
     constructor(...args: ConstructorParameters<typeof PDFPlusLibSubmodule>) {
         super(...args);
@@ -486,12 +487,16 @@ export class WorkspaceLib extends PDFPlusLibSubmodule {
         // The following is a workaround for this problem.
         if (root === this.app.workspace.leftSplit || root === this.app.workspace.rightSplit) {
             const sidebar = root as (typeof this.app.workspace.leftSplit | typeof this.app.workspace.rightSplit);
-            const eventRef = this.app.workspace.on('active-leaf-change', (anotherLeaf) => {
+            if (this.sidebarHideOwners.has(sidebar)) return;
+            const owner = this.plugin.addChild(new Component());
+            this.sidebarHideOwners.set(sidebar, owner);
+            owner.register(() => this.sidebarHideOwners.delete(sidebar));
+            owner.registerEvent(this.app.workspace.on('active-leaf-change', (anotherLeaf) => {
                 if (anotherLeaf && anotherLeaf.getRoot() !== sidebar) {
                     sidebar.collapse();
-                    this.app.workspace.offref(eventRef);
+                    this.plugin.removeChild(owner);
                 }
-            });
+            }));
         }
     }
 
@@ -524,6 +529,7 @@ export class WorkspaceLib extends PDFPlusLibSubmodule {
  * but it's better to use the public APIs if possible.
  */
 class HoverEditorLib extends PDFPlusLibSubmodule {
+    private focusOwners = new WeakMap<WorkspaceLeaf, Component>();
 
     get hoverEditorPlugin() {
         return this.app.plugins.plugins['obsidian-hover-editor'] ?? null;
@@ -542,19 +548,23 @@ class HoverEditorLib extends PDFPlusLibSubmodule {
         if (!this.hoverEditorPlugin) return null;
 
         return new Promise<WorkspaceLeaf | null>((resolve) => {
-            const eventRef = this.app.workspace.on('active-leaf-change', (leaf) => {
-                if (leaf && this.isHoverEditorLeaf(leaf)) {
-                    this.app.workspace.offref(eventRef);
-                    resolve(leaf);
-                }
-            });
-
-            this.app.workspace.trigger('link-hover', hoverParent, targetEl, linktext, sourcePath, state);
-
-            window.setTimeout(() => {
-                this.app.workspace.offref(eventRef);
+            const owner = this.plugin.addChild(new Component());
+            const finish = (leaf: WorkspaceLeaf | null) => {
+                resolve(leaf);
+                this.plugin.removeChild(owner);
+            };
+            owner.register(() => {
+                if (timer !== undefined) window.clearTimeout(timer);
                 resolve(null);
-            }, (this.waitTime ?? 300) + 300);
+            });
+            owner.registerEvent(this.app.workspace.on('active-leaf-change', (leaf) => {
+                if (leaf && this.isHoverEditorLeaf(leaf)) {
+                    finish(leaf);
+                }
+            }));
+
+            const timer = window.setTimeout(() => finish(null), (this.waitTime ?? 300) + 300);
+            this.app.workspace.trigger('link-hover', hoverParent, targetEl, linktext, sourcePath, state);
         });
     }
 
@@ -579,12 +589,16 @@ class HoverEditorLib extends PDFPlusLibSubmodule {
 
                 // make the hover editor "ephemeral"
                 if (this.settings.closeHoverEditorWhenLostFocus) {
-                    const eventRef = this.app.workspace.on('active-leaf-change', (anotherLeaf) => {
+                    if (this.focusOwners.has(leaf)) return;
+                    const owner = this.plugin.addChild(new Component());
+                    this.focusOwners.set(leaf, owner);
+                    owner.register(() => this.focusOwners.delete(leaf));
+                    owner.registerEvent(this.app.workspace.on('active-leaf-change', (anotherLeaf) => {
                         if (anotherLeaf !== leaf) {
                             popover.hide();
-                            this.app.workspace.offref(eventRef);
+                            this.plugin.removeChild(owner);
                         }
-                    });
+                    }));
                 }
             }
         }

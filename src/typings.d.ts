@@ -167,6 +167,10 @@ interface PDFViewerChild {
     // Added by this plugin //
     //////////////////////////
     component?: Component;
+    /** Replaced when the same native viewer loads another document or reloads its file. */
+    pdfPlusFileComponent?: Component;
+    /** Owns the current annotation popup's Markdown children and handlers. */
+    pdfPlusPopupComponent?: Component;
     hoverPopover: HoverPopover | null;
     /** The color palette (and other PDF++-related UI elements) mounted on this PDF viewer. */
     palette: ColorPalette | null;

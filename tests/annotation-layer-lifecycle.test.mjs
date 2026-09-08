@@ -26,6 +26,7 @@ class Component {
     }
 }
 class Element {
+    win = { setTimeout, clearTimeout };
     dataset = {};
     listeners = new Map();
     addEventListener(type, callback) { if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(callback); }
@@ -177,7 +178,8 @@ test('the actual annotationlayerrendered installer assigns all postprocessors to
     patchPDFViewerChild(f.plugin, f.child);
     try {
         await f.child.loadFile({ path: 'sample.pdf', stat: { size: 1000 } });
-        const baselineChildren = f.component._children.length, baselineEvents = f.component._events.length;
+        const layerParent = f.child.pdfPlusFileComponent ?? f.component;
+        const baselineChildren = layerParent._children.length, baselineEvents = layerParent._events.length;
         const builder = new NativeBuilder({ linkService: { eventBus: bus } });
         const internal = new Element(), external = new Element(), popup = new Element();
         internal.dataset = { annotationId: 'internal', internalLink: '' };
@@ -193,16 +195,16 @@ test('the actual annotationlayerrendered installer assigns all postprocessors to
         await bus.dispatch('annotationlayerrendered', { source: page, pageNumber: 1 });
         await bus.dispatch('annotationlayerrendered', { source: page, pageNumber: 1 });
         assert.equal(internal.count(), 3); assert.equal(external.count(), 1); assert.equal(popup.count(), 1);
-        assert.equal(f.component._children.length, baselineChildren + 1, 'one shared layer owner despite repeated render events');
+        assert.equal(layerParent._children.length, baselineChildren + 1, 'one shared layer owner despite repeated render events');
         await internal.dispatch('click'); await external.dispatch('mouseover');
         assert.equal(f.opened.length, 1); assert.equal(f.hovered.length, 1);
         page.cancelRendering();
         assert.equal(internal.count(), 0); assert.equal(external.count(), 0); assert.equal(popup.count(), 0);
-        assert.equal(f.component._children.length, baselineChildren);
-        assert.equal(f.component._events.length, baselineEvents);
+        assert.equal(layerParent._children.length, baselineChildren);
+        assert.equal(layerParent._events.length, baselineEvents);
         assert.equal(internal.dataset.pdfPlusIsAnnotationPostProcessed, undefined);
         await bus.dispatch('annotationlayerrendered', { source: page, pageNumber: 1 });
-        assert.equal(f.component._children.length, baselineChildren, 'late events on a cancelled page cannot recreate processors');
+        assert.equal(layerParent._children.length, baselineChildren, 'late events on a cancelled page cannot recreate processors');
     } finally {
         f.close();
         patchCleanups.reverse().forEach(cleanup => cleanup());

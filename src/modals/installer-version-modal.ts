@@ -13,6 +13,7 @@ export class InstallerVersionModal extends PDFPlusModal {
         const installerVersion = getInstallerVersion();
         if (installerVersion && isVersionOlderThan(installerVersion, minInstallerVersion)) {
             plugin.app.workspace.onLayoutReady(() => {
+                if ((plugin as PDFPlus & { _loaded?: boolean })._loaded === false) return;
                 new InstallerVersionModal(plugin).open();
             });
         }
