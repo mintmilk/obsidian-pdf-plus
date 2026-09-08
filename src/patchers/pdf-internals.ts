@@ -981,8 +981,8 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                             });
                         }
 
-                        // add delete button
-                        if (lib.isEditable(child) && plugin.settings.enableAnnotationDeletion) {
+                        // Check the current popup's viewer; this prototype patch outlives individual PDFs.
+                        if (lib.isEditable(this) && plugin.settings.enableAnnotationDeletion) {
                             iconContainerEl.createDiv('clickable-icon pdf-plus-delete-annotation', (deleteButtonEl) => {
                                 setIcon(deleteButtonEl, 'lucide-trash');
                                 setTooltip(deleteButtonEl, 'Delete');

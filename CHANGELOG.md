@@ -44,6 +44,9 @@ First Community Edition release. Based on upstream `0.40.31`.
 
 ### Fixed
 
+- Annotation deletion checks now use the PDF whose popup is being shown. The
+  shared viewer patch no longer captures the first opened PDF after it closes,
+  and another document's edit permissions cannot control the delete button.
 - Completed one-time events, including paste tracking after copying PDF links, now
   release their callbacks and captured objects immediately. Pending events are also
   released when cancelled or when the plugin unloads.

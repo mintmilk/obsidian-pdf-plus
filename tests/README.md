@@ -6,6 +6,8 @@ small Component/EventBus/DOM owners, without requiring a running Obsidian instan
 
 Covered behavior:
 
+- Annotation delete buttons follow the current PDF's edit permissions even when
+  the first PDF used to install the prototype patch has different permissions.
 - Persistent PDF.js listeners are removed with their viewer component.
 - One-shot listeners are removed before async or reentrant dispatch, including failures.
 - Unloading one component leaves other components' listeners intact.
