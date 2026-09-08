@@ -44,6 +44,12 @@ First Community Edition release. Based on upstream `0.40.31`.
 
 ### Fixed
 
+- Completed one-time events, including paste tracking after copying PDF links, now
+  release their callbacks and captured objects immediately. Pending events are also
+  released when cancelled or when the plugin unloads.
+- Settings input suggestions no longer retain old inputs through a document scroll
+  listener on Obsidian 1.13. Suggestions close with their settings display, including
+  when settings are rapidly hidden or rebuilt.
 - Settings category icons remain clickable after reselecting or reopening the PDF++
   settings tab on Obsidian 1.13. Cleanup now runs before asynchronous saving, so an
   earlier close cannot remove the newly displayed page's listeners. Repeated settings

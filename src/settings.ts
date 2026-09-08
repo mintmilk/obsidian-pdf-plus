@@ -792,6 +792,11 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 		return settings;
 	}
 
+	registerSuggest<T extends { close(): void }>(suggest: T): T {
+		this.component.register(() => suggest.close());
+		return suggest;
+	}
+
 	addTextSetting(settingName: KeysOfType<PDFPlusSettings, string>, placeholder?: string, onBlurOrEnter?: (setting: Setting) => any) {
 		const setting = this.addSetting(settingName)
 			.addText((text) => {
@@ -976,7 +981,7 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 				.addText((text) => {
 					text.setValue(this.plugin.settings[folderPathSettingName]);
 					text.inputEl.size = 30;
-					new FuzzyFolderSuggest(this.app, text.inputEl)
+					this.registerSuggest(new FuzzyFolderSuggest(this.app, text.inputEl))
 						.onSelect(({ item: folder }) => {
 							// @ts-ignore
 							this.plugin.settings[folderPathSettingName] = folder.path;
@@ -1061,7 +1066,7 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 						this.plugin.settings[settingName] = getNewAttachmentFolderPath();
 						await this.plugin.saveSettings();
 					});
-				new FuzzyFolderSuggest(this.app, text.inputEl)
+				this.registerSuggest(new FuzzyFolderSuggest(this.app, text.inputEl))
 					.onSelect(() => {
 						setTimeout(async () => {
 							// @ts-ignore
@@ -2465,7 +2470,7 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 						text.setPlaceholder('Command not found');
 					}
 					text.inputEl.size = 30;
-					new CommandSuggest(this, text.inputEl);
+					this.registerSuggest(new CommandSuggest(this, text.inputEl));
 				});
 			this.addSliderSetting('autoPasteTargetDialogTimeoutSec', 1, 60, 1)
 				.setName('[Auto-paste] Maximum time to wait for the command to open the target file (sec)')
@@ -2487,6 +2492,13 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 		this.addTextSetting('newFileTemplatePath', 'Leave blank not to use a template')
 			.setName('Template file path')
 			.then(async (setting) => {
+				// Attach to this display before description rendering can yield to hide()/redisplay().
+				const inputEl = (setting.components[0] as TextComponent).inputEl;
+				this.registerSuggest(new FuzzyMarkdownFileSuggest(this.app, inputEl))
+					.onSelect(({ item: file }) => {
+						this.plugin.settings.newFileTemplatePath = file.path;
+						this.plugin.saveSettings();
+					});
 				await this.renderMarkdown([
 					'You can leave this blank if you don\'t want to use a template.',
 					'You can use `file`, `folder`, `app`, and other global variables such as `moment`.',
@@ -2508,12 +2520,6 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 					'```',
 				], setting.descEl);
 
-				const inputEl = (setting.components[0] as TextComponent).inputEl;
-				new FuzzyMarkdownFileSuggest(this.app, inputEl)
-					.onSelect(({ item: file }) => {
-						this.plugin.settings.newFileTemplatePath = file.path;
-						this.plugin.saveSettings();
-					});
 			});
 
 
@@ -3200,6 +3206,12 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 			this.addTextSetting('vimrcPath', undefined, () => this.plugin.vimrc = null)
 				.setName('Vimrc file path (optional)')
 				.then(async (setting) => {
+					const inputEl = (setting.components[0] as TextComponent).inputEl;
+					this.registerSuggest(new FuzzyFileSuggest(this.app, inputEl))
+						.onSelect(({ item: file }) => {
+							this.plugin.settings.vimrcPath = file.path;
+							this.plugin.saveSettings();
+						});
 					await this.renderMarkdown([
 						'Only the [Ex commands supported by PDF++](https://github.com/RyotaUshio/obsidian-pdf-plus/blob/main/src/vim/ex-commands.ts) are allowed.',
 						'',
@@ -3226,12 +3238,6 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 						'After changing the path or the file content, you need to reopen the PDF viewer. If the vimrc file is a hidden file or is under a hidden folder, you need to reload PDF++ or the app.',
 					], setting.descEl);
 
-					const inputEl = (setting.components[0] as TextComponent).inputEl;
-					new FuzzyFileSuggest(this.app, inputEl)
-						.onSelect(({ item: file }) => {
-							this.plugin.settings.vimrcPath = file.path;
-							this.plugin.saveSettings();
-						});
 				}),
 			this.addHeading('Visual mode', 'vim-visual'),
 			this.addToggleSetting('vimVisualMotion')

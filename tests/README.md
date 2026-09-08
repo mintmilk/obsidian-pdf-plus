@@ -16,6 +16,10 @@ Covered behavior:
 - A failed settings save still leaves the hidden tab's listeners cleaned up.
 - Conditional settings release their update subscriptions with the display component.
 - Redisplaying settings preserves the outer container's scroll position.
+- Plugin-level one-time events release their owners before dispatch, including
+  reentrant callbacks, failures, cancellation and plugin unload.
+- Input suggestions remove document scroll listeners with the matching capture
+  flag and close with their settings display owner.
 
 For an integration regression, use an isolated vault and the same Obsidian installer,
 application version, PDF, and settings for both builds. Warm up with two open/close
@@ -41,3 +45,11 @@ the settings dialog and redisplaying a setting that rebuilds the page. Verify th
 section navigation still scrolls, the display component remains loaded, and event
 registrations do not grow across redisplays. Test internal setting links and scroll
 position preservation in the same Obsidian version, since these use its settings DOM.
+
+Also exercise flows beyond opening and closing PDFs: complete paste-tracking events
+whose callbacks capture a closed viewer and verify WeakRefs clear after GC. Leave
+some events pending, then trigger, cancel or unload them; retaining a cancellation
+handle must not retain a completed callback. For suggestions, repeatedly focus an
+input and rebuild settings in the same window, checking the input's ownerDocument
+rather than the main document. Old inputs and owners must be collected even when
+display/hide/display occur before asynchronous descriptions finish rendering.

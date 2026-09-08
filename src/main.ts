@@ -1,4 +1,4 @@
-import { Constructor, EventRef, Events, FileSystemAdapter, Keymap, Menu, Notice, ObsidianProtocolData, PaneType, Platform, Plugin, SettingTab, TFile, addIcon, apiVersion, loadPdfJs, requireApiVersion } from 'obsidian';
+import { Component, Constructor, EventRef, Events, FileSystemAdapter, Keymap, Menu, Notice, ObsidianProtocolData, PaneType, Platform, Plugin, SettingTab, TFile, addIcon, apiVersion, loadPdfJs, requireApiVersion } from 'obsidian';
 import * as pdflib from '@cantoo/pdf-lib';
 
 import { patchPDFView, patchPDFInternals, patchBacklink, patchWorkspace, patchPagePreview, patchClipboardManager, patchPDFInternalFromPDFEmbed, patchMenu } from 'patchers';
@@ -760,11 +760,23 @@ export default class PDFPlus extends Plugin {
 	}
 
 	registerOneTimeEvent<T extends Events>(events: T, ...[evt, callback, ctx]: OverloadParameters<T['on']>) {
+		const owner = new Component();
+		let pending: { callback: typeof callback, ctx: typeof ctx } | null = { callback, ctx };
+		const cancel = () => {
+			if (pending) this.removeChild(owner);
+		};
+		owner.register(() => { pending = null; });
 		const eventRef = events.on(evt, (...args: any[]) => {
-			callback.call(ctx, ...args);
-			events.offref(eventRef);
+			const current = pending;
+			if (!current) return;
+			// Release the event and its captures before user code can throw or emit again.
+			cancel();
+			current.callback.call(current.ctx, ...args);
 		}, ctx);
-		this.registerEvent(eventRef);
+		// The plugin's cleanup list must not retain completed one-time callbacks.
+		owner.registerEvent(eventRef);
+		this.addChild(owner);
+		return cancel;
 	}
 
 	async checkForUpdatesIfNeeded() {

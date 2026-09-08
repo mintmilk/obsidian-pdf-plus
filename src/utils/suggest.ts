@@ -16,7 +16,27 @@ const DEFAULT_FUZZY_INPUT_SUGGEST_OPTIONS: FuzzyInputSuggestOptions = {
 };
 
 
-export abstract class FuzzyInputSuggest<T> extends AbstractInputSuggest<FuzzyMatch<T>> {
+abstract class PDFPlusInputSuggest<T> extends AbstractInputSuggest<T> {
+    constructor(app: App, private readonly suggestionInputEl: HTMLInputElement) {
+        super(app, suggestionInputEl);
+    }
+
+    close() {
+        try {
+            super.close();
+        } finally {
+            // Obsidian 1.13 registers this document listener in capture mode,
+            // but its close() omits the capture flag when removing it.
+            const reposition = (this as unknown as { autoReposition?: EventListener }).autoReposition;
+            if (typeof reposition === 'function') {
+                this.suggestionInputEl.doc.removeEventListener('scroll', reposition, true);
+            }
+        }
+    }
+}
+
+
+export abstract class FuzzyInputSuggest<T> extends PDFPlusInputSuggest<FuzzyMatch<T>> {
 	inputEl: HTMLInputElement;
     options: FuzzyInputSuggestOptions;
 
@@ -92,7 +112,7 @@ export class FuzzyFolderSuggest extends FuzzyInputSuggest<TFolder> {
 }
 
 
-export class CommandSuggest extends AbstractInputSuggest<Command> {
+export class CommandSuggest extends PDFPlusInputSuggest<Command> {
 	plugin: PDFPlus;
 	inputEl: HTMLInputElement;
 	tab: PDFPlusSettingTab;
