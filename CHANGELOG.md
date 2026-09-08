@@ -44,6 +44,10 @@ First Community Edition release. Based on upstream `0.40.31`.
 
 ### Fixed
 
+- Settings category icons remain clickable after reselecting or reopening the PDF++
+  settings tab on Obsidian 1.13. Cleanup now runs before asynchronous saving, so an
+  earlier close cannot remove the newly displayed page's listeners. Repeated settings
+  refreshes also release old listeners and preserve the current scroll position.
 - The settings tab is no longer cut short on Obsidian 1.13. Obsidian 1.13 renamed the
   Page preview plugin's per-source override record from `overrides` to `options`, so
   `requireModKeyForLinkHover()` threw a `TypeError`. Because `PDFPlusSettingTab.display()`

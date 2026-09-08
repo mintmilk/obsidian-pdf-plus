@@ -1,4 +1,4 @@
-import { Component, DropdownComponent, Events, HexString, IconName, MarkdownRenderer, Modifier, Notice, ObsidianProtocolData, Platform, PluginSettingTab, Setting, TextAreaComponent, TextComponent, debounce, setIcon, setTooltip } from 'obsidian';
+import { Component, DropdownComponent, Events, HexString, IconName, MarkdownRenderer, Modifier, Notice, ObsidianProtocolData, Platform, PluginSettingTab, Setting, TextAreaComponent, TextComponent, setIcon, setTooltip } from 'obsidian';
 
 import PDFPlus from 'main';
 import { ExtendedPaneType } from 'lib/workspace-lib';
@@ -712,7 +712,7 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 				setTooltip(headerEl, heading);
 
 				this.component.registerDomEvent(headerEl, 'click', (evt) => {
-					(setting.settingEl.previousElementSibling ?? setting.settingEl).scrollIntoView({ behavior: 'smooth' });
+					this.scrollToSetting(setting, { behavior: 'smooth' });
 					this.updateHeaderElClassOnScroll(evt);
 				});
 
@@ -727,13 +727,13 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 	}
 
 	updateHeaderElClass() {
-		const tabHeight = this.containerEl.getBoundingClientRect().height;
+		const { top: tabTop, height: tabHeight } = this.containerEl.getBoundingClientRect();
 
 		const headingEntries = Array.from(this.iconHeadings.entries());
 		for (let i = 0; i < headingEntries.length; i++) {
-			const top = headingEntries[i][1].settingEl.getBoundingClientRect().top;
-			const bottom = headingEntries[i + 1]?.[1].settingEl.getBoundingClientRect().top
-				?? this.contentEl.getBoundingClientRect().bottom;
+			const top = headingEntries[i][1].settingEl.getBoundingClientRect().top - tabTop;
+			const bottom = (headingEntries[i + 1]?.[1].settingEl.getBoundingClientRect().top
+				?? this.contentEl.getBoundingClientRect().bottom) - tabTop;
 			const isVisible = top <= tabHeight * 0.85 && bottom >= tabHeight * 0.2 + this.headerContainerEl.clientHeight;
 			const id = headingEntries[i][0];
 			this.headerEls.get(id)?.toggleClass('is-active', isVisible);
@@ -741,9 +741,8 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 	}
 
 	updateHeaderElClassOnScroll(evt?: MouseEvent) {
-		const win = evt?.win ?? activeWindow;
-		const timer = win.setInterval(() => this.updateHeaderElClass(), 50);
-		win.setTimeout(() => win.clearInterval(timer), 1500);
+		// The container's scroll listener also follows smooth scrolling and keyboard navigation.
+		this.updateHeaderElClass();
 	}
 
 	scrollTo(settingName: keyof PDFPlusSettings, options?: { behavior: ScrollBehavior }) {
@@ -758,7 +757,12 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 
 	scrollToSetting(setting: Setting, options?: { behavior: ScrollBehavior }) {
 		const el = setting.settingEl;
-		if (el) this.containerEl.scrollTo({ top: el.offsetTop - this.headerContainerEl.offsetHeight, ...options });
+		if (el) {
+			const top = this.containerEl.scrollTop + el.getBoundingClientRect().top
+				- this.containerEl.getBoundingClientRect().top - this.containerEl.clientTop
+				- this.headerContainerEl.offsetHeight;
+			this.containerEl.scrollTo({ top, ...options });
+		}
 	}
 
 	openFromObsidianUrl(params: ObsidianProtocolData) {
@@ -784,7 +788,7 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 	showConditionally(setting: Setting | Setting[], condition: () => boolean) {
 		const settings = Array.isArray(setting) ? setting : [setting];
 		const togglers = settings.map((setting) => this.getVisibilityToggler(setting, condition));
-		this.events.on('update', () => togglers.forEach((toggler) => toggler()));
+		this.component.registerEvent(this.events.on('update', () => togglers.forEach((toggler) => toggler())));
 		return settings;
 	}
 
@@ -1575,9 +1579,9 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 
 	/** Refresh the setting tab and then scroll back to the original position. */
 	redisplay() {
-		const scrollTop = this.contentEl.scrollTop;
+		const scrollTop = this.containerEl.scrollTop;
 		this.display();
-		this.contentEl.scroll({ top: scrollTop });
+		this.containerEl.scroll({ top: scrollTop });
 
 		this.events.trigger('update');
 	}
@@ -1592,6 +1596,13 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 
 		// Setting tab rendering starts here
 
+		// redisplay() does not call hide(); release the previous rendering's listeners first.
+		this.component.unload();
+		this.component = new Component();
+		this.items = {};
+		this.headings.clear();
+		this.iconHeadings.clear();
+		this.headerEls.clear();
 		this.headerContainerEl.empty();
 		this.contentEl.empty();
 		this.promises = [];
@@ -1599,14 +1610,10 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 
 
 		// Show which section is currently being displayed by highlighting the corresponding icon in the header.
-		activeWindow.setTimeout(() => this.updateHeaderElClass());
-		for (const eventType of ['wheel', 'touchmove'] as const) {
-			this.component.registerDomEvent(
-				this.contentEl, eventType,
-				debounce(() => this.updateHeaderElClass(), 100),
-				{ passive: true }
-			);
-		}
+		const win = this.containerEl.win;
+		const frame = win.requestAnimationFrame(() => this.updateHeaderElClass());
+		this.component.register(() => win.cancelAnimationFrame(frame));
+		this.component.registerDomEvent(this.containerEl, 'scroll', () => this.updateHeaderElClass(), { passive: true });
 
 
 		this.contentEl.createDiv('top-note', async (el) => {
@@ -3435,11 +3442,13 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 
 		this.plugin.validateAutoFocusAndAutoPasteSettings();
 
+		// Obsidian can display this tab again without awaiting hide(). An old save must
+		// never unload the listeners or clear the promises belonging to that new display.
+		this.promises = [];
+		this.component.unload();
+
 		await this.plugin.saveSettings();
 
 		this.plugin.loadStyle();
-
-		this.promises = [];
-		this.component.unload();
 	}
 }
