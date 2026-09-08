@@ -44,6 +44,12 @@ First Community Edition release. Based on upstream `0.40.31`.
 
 ### Fixed
 
+- Rapid PDF scrolling now releases internal/external link handlers and annotation
+  hover components when PDF.js discards their annotation layer, instead of keeping
+  old page nodes until the whole PDF closes. Zooms that retain the layer keep working.
+- Backlink redraws release page-level listeners and cleanup callbacks, avoid duplicate
+  handlers on the same highlight, and replace old PDF render subscriptions after
+  metadata updates instead of accumulating them for the lifetime of the viewer.
 - Annotation deletion checks now use the PDF whose popup is being shown. The
   shared viewer patch no longer captures the first opened PDF after it closes,
   and another document's edit permissions cannot control the delete button.

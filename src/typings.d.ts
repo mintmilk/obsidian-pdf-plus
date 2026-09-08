@@ -524,6 +524,8 @@ interface TextLayer {
 }
 
 interface AnnotationLayerBuilder {
+    /** Set by PDF.js when this builder is discarded, rather than kept across zoom. */
+    _cancelled?: boolean;
     div: HTMLDivElement; // div.annotationLayer
     pageDiv: HTMLDivElement; // div.page
     pdfPage: PDFPageProxy;
@@ -531,6 +533,7 @@ interface AnnotationLayerBuilder {
     annotationStorage: AnnotationStorage;
     renderForms: boolean;
     render(): Promise<any>;
+    cancel(): void;
 }
 
 interface AnnotationLayer {

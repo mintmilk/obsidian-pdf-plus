@@ -6,6 +6,12 @@ small Component/EventBus/DOM owners, without requiring a running Obsidian instan
 
 Covered behavior:
 
+- Discarding a native annotation layer releases internal/external link handlers,
+  hover entry points and child components; retaining it during zoom preserves them.
+- Delayed link destinations cannot navigate after their annotation layer is cancelled.
+- Repeated annotation-layer rebuilds and backlink redraws keep cleanup ownership bounded.
+- Backlink page cleanup matches capture options, isolates other pages and consumes
+  callbacks once; repeated metadata updates replace the three PDF render listeners.
 - Annotation delete buttons follow the current PDF's edit permissions even when
   the first PDF used to install the prototype patch has different permissions.
 - Persistent PDF.js listeners are removed with their viewer component.
@@ -55,3 +61,10 @@ handle must not retain a completed callback. For suggestions, repeatedly focus a
 input and rebuild settings in the same window, checking the input's ownerDocument
 rather than the main document. Old inputs and owners must be collected even when
 display/hide/display occur before asynchronous descriptions finish rendering.
+
+For scrolling regressions, traverse enough pages to exceed the native PDF.js page
+buffer, then scroll back and repeat. Check viewer callbacks and the entire child
+component tree after each pass, not only after closing the file. Also exercise links
+and hover popups after a zoom that preserves the annotation layer. Compare a core-only
+run at the same scale and canvas dimensions before attributing native/GPU memory peaks
+to plugin listeners; record settled and post-GC samples separately.

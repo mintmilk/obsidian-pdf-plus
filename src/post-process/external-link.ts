@@ -46,9 +46,9 @@ export class PDFExternalLinkPostProcessor extends PDFPlusComponent implements Ho
         }
     }
 
-    static registerEvents(plugin: PDFPlus, child: PDFViewerChild, annot: AnnotationElement) {
+    static registerEvents(plugin: PDFPlus, child: PDFViewerChild, annot: AnnotationElement, component = child.component) {
         if (annot.data.subtype === 'Link' && annot.data.url) {
-            return child.component?.addChild(new PDFExternalLinkPostProcessor(plugin, child, annot));
+            return component?.addChild(new PDFExternalLinkPostProcessor(plugin, child, annot));
         }
         return null;
     }

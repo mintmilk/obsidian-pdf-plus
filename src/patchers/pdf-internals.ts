@@ -6,7 +6,7 @@ import PDFPlus from 'main';
 import { PDFAnnotationDeleteModal, PDFAnnotationEditModal } from 'modals';
 import { onContextMenu, onOutlineContextMenu, onThumbnailContextMenu, showContextMenu } from 'context-menu';
 import { registerAnnotationPopupDrag, registerOutlineDrag, registerThumbnailDrag } from 'drag';
-import { PDFInternalLinkPostProcessor, PDFOutlineItemPostProcessor, PDFThumbnailItemPostProcessor, PDFExternalLinkPostProcessor } from 'post-process';
+import { PDFInternalLinkPostProcessor, PDFOutlineItemPostProcessor, PDFThumbnailItemPostProcessor, PDFExternalLinkPostProcessor, getAnnotationLayerComponent } from 'post-process';
 import { patchPDFOutlineViewer } from 'patchers';
 import { PDFViewerBacklinkVisualizer } from 'backlink-visualizer';
 import { PDFPlusToolbar } from 'toolbar';
@@ -432,23 +432,27 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
 
                 lib.registerPDFEvent('annotationlayerrendered', this.pdfViewer.eventBus, component, (data) => {
                     const { source: pageView } = data;
+                    const layer = pageView.annotationLayer;
+                    if (!layer) return;
+                    const layerComponent = getAnnotationLayerComponent(this, layer);
+                    if (!layerComponent) return;
 
-                    pageView.annotationLayer?.div
+                    layer.div
                         ?.querySelectorAll<HTMLElement>('section[data-annotation-id]')
                         .forEach((el) => {
                             const annotationId = el.dataset.annotationId;
                             if (!annotationId) return;
 
-                            const annot = pageView.annotationLayer?.annotationLayer.getAnnotation(annotationId);
+                            const annot = layer.annotationLayer.getAnnotation(annotationId);
                             if (!annot) return;
 
                             // Needed to avoid registering the event listeners on the same annotation container element multiple times
                             if (annot.container.dataset.pdfPlusIsAnnotationPostProcessed === 'true') return;
 
                             if (annot.data.subtype === 'Link' && typeof annot.container.dataset.internalLink === 'string') {
-                                PDFInternalLinkPostProcessor.registerEvents(plugin, this, annot);
+                                PDFInternalLinkPostProcessor.registerEvents(plugin, this, annot, layerComponent);
                             } else if (annot.data.subtype === 'Link' && annot.data.url) {
-                                PDFExternalLinkPostProcessor.registerEvents(plugin, this, annot);
+                                PDFExternalLinkPostProcessor.registerEvents(plugin, this, annot, layerComponent);
                             }
 
                             // Avoid rendering annotations that are replies to other annotations
@@ -475,7 +479,7 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                                             this.destroyAnnotationPopup();
                                         }
                                     },
-                                    component,
+                                    component: layerComponent,
                                 });
                             }
 

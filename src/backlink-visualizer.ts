@@ -1,4 +1,4 @@
-import { HoverParent, HoverPopover, Keymap, TFile, setIcon } from 'obsidian';
+import { Component, HoverParent, HoverPopover, Keymap, TFile, setIcon } from 'obsidian';
 
 import PDFPlus from 'main';
 import { PDFPlusComponent } from 'lib/component';
@@ -40,6 +40,7 @@ export class BacklinkDomManager extends PDFPlusComponent {
     private pagewiseStatus = new Map<number, { onPageReady: boolean, onTextLayerReady: boolean, onAnnotationLayerReady: boolean }>;
     private pagewiseOnClearDomCallbacksMap = new MultiValuedMap<number, () => any>();
     private pagewisePointerDelegate = new Map<number, BacklinkHighlightPointerDelegate>();
+    private processedBacklinks = new WeakMap<HTMLElement, WeakSet<PDFBacklinkCache>>();
 
     constructor(visualizer: PDFViewerBacklinkVisualizer) {
         super(visualizer.plugin);
@@ -67,18 +68,27 @@ export class BacklinkDomManager extends PDFPlusComponent {
             this.pagewisePointerDelegate.delete(pageNumber);
         }
 
-        const cacheToDoms = this.getCacheToDomsMap(pageNumber);
-        for (const el of cacheToDoms.values()) {
+        const cacheToDoms = this.pagewiseCacheToDomsMap.get(pageNumber);
+        for (const el of cacheToDoms?.values() ?? []) {
+            this.processedBacklinks.delete(el);
             // Avoid removing elements in the annotation layer
             if (el.closest('.pdf-plus-backlink-highlight-layer')) el.remove();
         }
-        this.pagewiseOnClearDomCallbacksMap.get(pageNumber).forEach(cb => cb());
+        const callbacks = this.pagewiseOnClearDomCallbacksMap.get(pageNumber);
+        this.pagewiseOnClearDomCallbacksMap.delete(pageNumber);
+        callbacks.forEach(cb => cb());
         this.pagewiseCacheToDomsMap.delete(pageNumber);
         this.updateStatus(pageNumber, { onPageReady: false, onTextLayerReady: false, onAnnotationLayerReady: false });
     }
 
     clear() {
+        for (const [pageNumber] of this.pagewiseOnClearDomCallbacksMap) {
+            this.clearDomInPage(pageNumber);
+        }
         for (const pageNumber of this.pagewiseCacheToDomsMap.keys()) {
+            this.clearDomInPage(pageNumber);
+        }
+        for (const pageNumber of this.pagewisePointerDelegate.keys()) {
             this.clearDomInPage(pageNumber);
         }
     }
@@ -120,10 +130,15 @@ export class BacklinkDomManager extends PDFPlusComponent {
             const color = cache.getColor();
 
             for (const el of cacheToDoms.get(cache)) {
-                this.hookBacklinkOpeners(el, cache);
-                this.hookBacklinkViewEventHandlers(el, cache);
-                this.hookContextMenuHandler(el, cache);
-                this.hookClassAdderOnMouseOver(el, cache);
+                let processed = this.processedBacklinks.get(el);
+                if (!processed) this.processedBacklinks.set(el, processed = new WeakSet());
+                if (!processed.has(cache)) {
+                    this.hookBacklinkOpeners(el, cache);
+                    this.hookBacklinkViewEventHandlers(el, cache);
+                    this.hookContextMenuHandler(el, cache);
+                    this.hookClassAdderOnMouseOver(el, cache);
+                    processed.add(cache);
+                }
                 this.setHighlightColor(el, color);
             }
         }
@@ -198,10 +213,10 @@ export class BacklinkDomManager extends PDFPlusComponent {
                         const listener = (event: MouseEvent) => {
                             if (isMouseEventExternal(event, backlinkItemEl)) {
                                 backlinkItemEl.removeClass('hovered-backlink');
-                                el.removeEventListener('mouseout', listener);
+                                removeListener();
                             }
                         };
-                        el.addEventListener('mouseout', listener);
+                        const removeListener = this.registerDomEventForCache(cache, el, 'mouseout', listener);
                     }
                 });
             }
@@ -229,9 +244,9 @@ export class BacklinkDomManager extends PDFPlusComponent {
                     for (const otherEl of this.getCacheToDomsMap(pageNumber).get(cache)) {
                         otherEl.removeClass(className);
                     }
-                    el.removeEventListener('mouseout', onMouseOut);
+                    removeListener();
                 };
-                el.addEventListener('mouseout', onMouseOut);
+                const removeListener = this.registerDomEventForCache(cache, el, 'mouseout', onMouseOut);
             });
         }
     }
@@ -254,12 +269,16 @@ export class BacklinkDomManager extends PDFPlusComponent {
     }
 
     registerDomEventForCache<K extends keyof HTMLElementEventMap>(cache: PDFBacklinkCache, el: HTMLElement, type: K, callback: (this: HTMLElement, ev: HTMLElementEventMap[K]) => any, options?: boolean | AddEventListenerOptions) {
-        this.registerDomEvent(el, type, callback, options);
-        if (cache.page && cache.annotation) {
-            this.onClearDomInPage(cache.page, () => {
-                el.removeEventListener(type, callback);
-            });
-        }
+        el.addEventListener(type, callback, options);
+        const capture = typeof options === 'boolean' ? options : options?.capture ?? false;
+        const cleanup = () => {
+            el.removeEventListener(type, callback, capture);
+            if (cache.page) this.pagewiseOnClearDomCallbacksMap.deleteValue(cache.page, cleanup);
+        };
+        // Page redraws must release both the listener and its cleanup closure.
+        if (cache.page) this.onClearDomInPage(cache.page, cleanup);
+        else this.register(cleanup);
+        return cleanup;
     }
 }
 
@@ -345,6 +364,7 @@ export class PDFViewerBacklinkVisualizer extends PDFBacklinkVisualizer implement
     child: PDFViewerChild;
     domManager: BacklinkDomManager;
     rectangleCache: RectangleCache;
+    private renderComponent?: Component;
 
     constructor(plugin: PDFPlus, file: TFile, child: PDFViewerChild) {
         super(plugin, file);
@@ -390,8 +410,10 @@ export class PDFViewerBacklinkVisualizer extends PDFBacklinkVisualizer implement
 
     visualize() {
         const viewer = this.child.pdfViewer;
+        if (this.renderComponent) this.removeChild(this.renderComponent);
+        const component = this.renderComponent = this.addChild(new Component());
 
-        this.lib.onPageReady(viewer, this, (pageNumber) => {
+        this.lib.onPageReady(viewer, component, (pageNumber) => {
             this.domManager.clearDomInPage(pageNumber);
 
             const pageIndex = this.index.getPageIndex(pageNumber);
@@ -410,7 +432,7 @@ export class PDFViewerBacklinkVisualizer extends PDFBacklinkVisualizer implement
             this.domManager.postProcessPageIfReady(pageNumber);
         });
 
-        this.lib.onTextLayerReady(viewer, this, (pageNumber) => {
+        this.lib.onTextLayerReady(viewer, component, (pageNumber) => {
             const status = this.domManager.getStatus(pageNumber);
             if (!status.onPageReady || status.onTextLayerReady) return;
 
@@ -424,7 +446,7 @@ export class PDFViewerBacklinkVisualizer extends PDFBacklinkVisualizer implement
             this.domManager.postProcessPageIfReady(pageNumber);
         });
 
-        this.lib.onAnnotationLayerReady(viewer, this, (pageNumber) => {
+        this.lib.onAnnotationLayerReady(viewer, component, (pageNumber) => {
             const status = this.domManager.getStatus(pageNumber);
             if (!status.onPageReady || status.onAnnotationLayerReady) return;
 

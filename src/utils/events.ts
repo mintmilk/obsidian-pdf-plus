@@ -184,7 +184,8 @@ export function showChildElOnParentElHover(config: {
         }
     };
 
-    parentEl.addEventListener('mouseover', onParentElMouseOver);
+    if (parentComponent) parentComponent.registerDomEvent(parentEl, 'mouseover', onParentElMouseOver);
+    else parentEl.addEventListener('mouseover', onParentElMouseOver);
 }
 
 export function dispatchMouseEvent(target: HTMLElement, type: keyof HTMLElementEventMap, options?: MouseEventInit) {

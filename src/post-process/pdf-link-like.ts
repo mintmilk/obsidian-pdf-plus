@@ -1,10 +1,47 @@
 import { App, Component, HoverParent, HoverPopover, Keymap } from 'obsidian';
+import { around } from 'monkey-around';
 
 import PDFPlus from 'main';
 import { PDFPlusLib } from 'lib';
-import { AnnotationElement, PDFOutlineTreeNode, PDFViewerChild, PDFJsDestArray } from 'typings';
+import { AnnotationElement, AnnotationLayerBuilder, PDFOutlineTreeNode, PDFViewerChild, PDFJsDestArray } from 'typings';
 import { isMouseEventExternal, isTargetHTMLElement } from 'utils';
 import { BibliographyManager } from 'bib';
+
+
+const annotationLayerComponents = new WeakMap<AnnotationLayerBuilder, { parent: Component, component: Component }>();
+
+/** PDF.js cancels a builder when discarding its layer, including page-buffer eviction.
+ * A zoom that keeps the annotation layer does not cancel it, so its handlers stay live. */
+export function getAnnotationLayerComponent(child: PDFViewerChild, layer: AnnotationLayerBuilder): Component | undefined {
+    const parent = child.component;
+    if (!parent || child.unloaded || (parent as Component & { _loaded?: boolean })._loaded === false || layer._cancelled) return;
+
+    const existing = annotationLayerComponents.get(layer);
+    if (existing?.parent === parent) return existing.component;
+    if (existing) existing.parent.removeChild(existing.component);
+
+    const component = parent.addChild(new Component());
+    annotationLayerComponents.set(layer, { parent, component });
+    component.register(() => {
+        annotationLayerComponents.delete(layer);
+        // The same native layer can survive plugin disable/re-enable.
+        layer.div?.querySelectorAll<HTMLElement>('[data-pdf-plus-is-annotation-post-processed]').forEach((el) => {
+            delete el.dataset.pdfPlusIsAnnotationPostProcessed;
+        });
+    });
+    component.register(around(layer, {
+        cancel(old) {
+            return function (this: AnnotationLayerBuilder, ...args: any[]) {
+                try {
+                    return old.apply(this, args);
+                } finally {
+                    parent.removeChild(component);
+                }
+            };
+        },
+    }));
+    return component;
+}
 
 
 /**
@@ -24,6 +61,8 @@ abstract class PDFLinkLikePostProcessor implements HoverParent {
     child: PDFViewerChild;
     targetEl: HTMLElement;
     private component: Component | undefined;
+    private viewerComponent: Component | undefined;
+    private disposed = false;
 
     static readonly HOVER_LINK_SOURCE_ID: string;
 
@@ -53,13 +92,15 @@ abstract class PDFLinkLikePostProcessor implements HoverParent {
         // (e.g. add a class or a data attribute to the popover's hover element)
     }
 
-    protected constructor(plugin: PDFPlus, child: PDFViewerChild, targetEl: HTMLElement) {
+    protected constructor(plugin: PDFPlus, child: PDFViewerChild, targetEl: HTMLElement, component = child.component) {
         this.plugin = plugin;
         this.app = plugin.app;
         this.lib = plugin.lib;
         this.child = child;
         this.targetEl = targetEl;
-        this.component = child.component;
+        this.component = component;
+        this.viewerComponent = child.component;
+        if (component && component !== this.viewerComponent) component.register(() => { this.disposed = true; });
 
         if (this.useModifierKey()) this.registerClickToOpenInNewLeaf();
         if (this.shouldShowHoverPopover()) this.registerHover();
@@ -149,7 +190,7 @@ abstract class PDFLinkLikePostProcessor implements HoverParent {
     }
 
     private isActive() {
-        return !!this.component && this.child.component === this.component && !this.child.unloaded;
+        return !this.disposed && !!this.component && this.child.component === this.viewerComponent && !this.child.unloaded;
     }
 
     private recordLeafHistory() {
@@ -206,14 +247,14 @@ export class PDFInternalLinkPostProcessor extends PDFDestinationHolderPostProces
 
     static readonly HOVER_LINK_SOURCE_ID = 'pdf-plus-internal-link';
 
-    protected constructor(plugin: PDFPlus, child: PDFViewerChild, linkAnnotationElement: AnnotationElement) {
-        super(plugin, child, linkAnnotationElement.container);
+    protected constructor(plugin: PDFPlus, child: PDFViewerChild, linkAnnotationElement: AnnotationElement, component = child.component) {
+        super(plugin, child, linkAnnotationElement.container, component);
         this.linkAnnotationElement = linkAnnotationElement;
     }
 
-    static registerEvents(plugin: PDFPlus, child: PDFViewerChild, linkAnnotationElement: AnnotationElement) {
+    static registerEvents(plugin: PDFPlus, child: PDFViewerChild, linkAnnotationElement: AnnotationElement, component = child.component) {
         if (linkAnnotationElement.data.subtype === 'Link') {
-            return new PDFInternalLinkPostProcessor(plugin, child, linkAnnotationElement);
+            return new PDFInternalLinkPostProcessor(plugin, child, linkAnnotationElement, component);
         }
         return null;
     }
