@@ -15,6 +15,7 @@ import { PDFExternalLinkPostProcessor, PDFInternalLinkPostProcessor, PDFOutlineI
 import { BibliographyManager } from 'bib';
 import { DataviewInlineFieldsModal, withFilesWithInlineFields } from 'lib/dataview';
 import { alignTextLayer } from 'text-layer-fonts';
+import { PDFPageReleaseManager } from 'page-release';
 
 
 export default class PDFPlus extends Plugin {
@@ -106,6 +107,8 @@ export default class PDFPlus extends Plugin {
 
 		this.domManager = this.addChild(new DomManager(this));
 		this.domManager.registerCalloutRenderer();
+
+		this.addChild(new PDFPageReleaseManager(this));
 
 		this.registerRibbonIcons();
 
@@ -628,6 +631,8 @@ export default class PDFPlus extends Plugin {
 		this.register(() => {
 			this.app.embedRegistry.unregisterExtension('pdf');
 			this.app.embedRegistry.registerExtension('pdf', originalPDFEmbedCreator);
+			// Rectangle embeds unload before this runs; do not leave their shared documents lingering.
+			PDFCroppedEmbed.closeUnusedDocuments();
 		});
 
 		this.app.embedRegistry.unregisterExtension('pdf');

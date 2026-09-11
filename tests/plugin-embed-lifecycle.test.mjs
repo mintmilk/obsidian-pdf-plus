@@ -20,7 +20,7 @@ class Element extends EventTarget {
     count(){return [...this.listeners.values()].reduce((a,s)=>a+s.size,0);}
 }
 class Embed extends Component { containerEl = new Element(); viewer={}; }
-class Cropped extends Embed { onload(){this.renderPending=true;} onunload(){this.renderPending=false;} }
+class Cropped extends Embed { static documentsClosed=0; static closeUnusedDocuments(){Cropped.documentsClosed++;} onload(){this.renderPending=true;} onunload(){this.renderPending=false;} }
 let loadPdfJs = async () => {};
 const {code}=await transform(await readFile(new URL('../src/main.ts',import.meta.url),'utf8'),{loader:'ts',format:'cjs'});
 const module={exports:{}};
@@ -64,7 +64,9 @@ test('layout-ready work cannot install patches after the plugin unloads',()=>{
 });
 test('plugin unload stops still-open cropped embed rendering without unloading native embeds',()=>{
     const f=fixture(),crop=f.create('#page=1&rect=0,0,100,100'),native=f.create('#page=1');crop.load();native.load();
+    const closed=Cropped.documentsClosed;
     assert.equal(crop.renderPending,true);f.p.unload();assert.equal(crop.renderPending,false);assert.equal(native._loaded,true);native.unload();
+    assert.equal(Cropped.documentsClosed,closed+1,'shared cropped-embed documents are not closed on unload');
 });
 test('pending plugin initialization cannot resume registering resources after unload',async()=>{
     let resolve;loadPdfJs=()=>new Promise(r=>resolve=r);

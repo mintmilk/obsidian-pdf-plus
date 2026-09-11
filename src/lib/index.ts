@@ -1,4 +1,4 @@
-import { App, Component, EditableFileView, FileView, MarkdownView, Notice, Platform, TFile, TextFileView, View, base64ToArrayBuffer, normalizePath, parseLinktext, requestUrl } from 'obsidian';
+import { App, Component, EditableFileView, FileView, MarkdownView, Notice, Platform, TFile, TextFileView, View, normalizePath, parseLinktext, requestUrl } from 'obsidian';
 import { CanvasFileData } from 'obsidian/canvas';
 import { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import { EncryptedPDFError, PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber, PDFRef } from '@cantoo/pdf-lib';
@@ -8,7 +8,7 @@ import { ColorPalette, ColorPaletteState } from 'color-palette';
 import { copyLinkLib } from './copy-link';
 import { HighlightLib } from './highlights';
 import { WorkspaceLib } from './workspace-lib';
-import { cropCanvas, encodeLinktext, getDirectPDFObj, isVersionNewerThan, parsePDFSubpath, removeExtension, rotateCanvas, toSingleLine, isTargetNode } from 'utils';
+import { encodeLinktext, getDirectPDFObj, isVersionNewerThan, parsePDFSubpath, removeExtension, toSingleLine, isTargetNode } from 'utils';
 import { PDFPlusCommands } from './commands';
 import { PDFComposer } from './composer';
 import { PDFOutlines } from './outlines';
@@ -994,20 +994,35 @@ export class PDFPlusLib {
         return new Promise<void>((resolve) => this.app.metadataCache.onCleanCache(resolve));
     }
 
-    async renderPDFPageToCanvas(page: PDFPageProxy, resolution?: number, renderParams: OptionalRenderParameters = {}, signal?: AbortSignal): Promise<HTMLCanvasElement> {
+    /**
+     * @param cropRect If given, only this rectangle (in PDF space) is rendered, oriented as it appears on the
+     * page. The canvas is then sized to the rectangle rather than to the whole page: at the resolutions used for
+     * rectangle embeds (up to 7x), a whole A4 page alone is a ~90 MiB canvas.
+     */
+    async renderPDFPageToCanvas(page: PDFPageProxy, resolution?: number, renderParams: OptionalRenderParameters = {}, signal?: AbortSignal, cropRect?: Rect): Promise<HTMLCanvasElement> {
         signal?.throwIfAborted();
         const canvas = createEl('canvas');
         try {
             const canvasContext = canvas.getContext('2d')!;
             const viewport = page.getViewport({ scale: 1 });
             const outputScale = resolution ?? window.devicePixelRatio ?? 1;
-            canvas.width = Math.floor(viewport.width * outputScale);
-            canvas.height = Math.floor(viewport.height * outputScale);
+            // The region to render, in the viewport's (rotated) coordinates at scale 1.
+            let [left, top, width, height] = [0, 0, viewport.width, viewport.height];
+            if (cropRect) {
+                const [x1, y1, x2, y2] = viewport.convertToViewportRectangle(cropRect);
+                left = Math.min(x1, x2);
+                top = Math.min(y1, y2);
+                width = Math.abs(x2 - x1);
+                height = Math.abs(y2 - y1);
+            }
+            canvas.width = Math.max(1, Math.floor(width * outputScale));
+            canvas.height = Math.max(1, Math.floor(height * outputScale));
             canvas.setCssStyles({
-                width: Math.floor(viewport.width) + 'px',
-                height: Math.floor(viewport.height) + 'px',
+                width: Math.floor(width) + 'px',
+                height: Math.floor(height) + 'px',
             });
-            const transform = [outputScale, 0, 0, outputScale, 0, 0];
+            // PDF.js applies `transform` before the viewport transform, so this shifts the region to the origin.
+            const transform = [outputScale, 0, 0, outputScale, -left * outputScale, -top * outputScale];
             const task = page.render({ canvas, canvasContext, transform, viewport, ...renderParams });
             const abort = () => task.cancel();
             signal?.addEventListener('abort', abort, { once: true });
@@ -1036,55 +1051,53 @@ export class PDFPlusLib {
      * - cropRect: The rectangle to crop the PDF page to. The coordinates are in PDF space.
      */
     async pdfPageToImageDataUrl(page: PDFPageProxy, options?: PDFPageToImageOptions, signal?: AbortSignal): Promise<string> {
-        const [left, bottom, right, top] = page.view;
-        const pageWidth = right - left;
-        const pageHeight = top - bottom;
+        const canvas = await this.renderPDFPageToImageCanvas(page, options, signal);
+        try {
+            return canvas.toDataURL(options?.type, options?.encoderOptions);
+        } finally {
+            canvas.width = canvas.height = 0;
+        }
+    }
 
-        const type = options?.type;
-        const encoderOptions = options?.encoderOptions;
+    /**
+     * The same as `pdfPageToImageDataUrl`, but as a `Blob`: no base64 copy of the image is kept in the JS heap,
+     * and the result can be shown through an object URL.
+     */
+    async pdfPageToImageBlob(page: PDFPageProxy, options?: PDFPageToImageOptions, signal?: AbortSignal): Promise<Blob> {
+        const canvas = await this.renderPDFPageToImageCanvas(page, options, signal);
+        try {
+            return await new Promise<Blob>((resolve, reject) => {
+                canvas.toBlob((blob) => {
+                    if (blob) resolve(blob);
+                    else reject(new Error('Failed to encode the rendered PDF page'));
+                }, options?.type ?? 'image/png', options?.encoderOptions);
+            });
+        } finally {
+            canvas.width = canvas.height = 0;
+        }
+    }
+
+    private async renderPDFPageToImageCanvas(page: PDFPageProxy, options?: PDFPageToImageOptions, signal?: AbortSignal): Promise<HTMLCanvasElement> {
         let resolution = options?.resolution;
         if (typeof resolution !== 'number') {
-            resolution =
-                // Requiring too much resolution on mobile devices seems to cause the rendering to fail
-                (Platform.isDesktop ? 7 : Platform.isTablet ? 4 : (window.devicePixelRatio || 1))
-                * (this.plugin.settings.rectEmbedResolution / 100);
+            resolution = this.getMaxRectImageResolution();
         }
-        const cropRect = options?.cropRect;
+        return await this.renderPDFPageToCanvas(page, resolution, options?.renderParams, signal, options?.cropRect);
+    }
 
-        const renderParams = options?.renderParams;
-        const canvas = await this.renderPDFPageToCanvas(page, resolution, renderParams, signal);
-        const canvases = new Set([canvas]);
-        try {
-            if (!cropRect) return canvas.toDataURL(type, encoderOptions);
-
-            const rotatedCanvas = rotateCanvas(canvas, 360 - page.rotate);
-            canvases.add(rotatedCanvas);
-            const scaleX = rotatedCanvas.width / pageWidth;
-            const scaleY = rotatedCanvas.height / pageHeight;
-            const crop = {
-                left: (cropRect[0] - left) * scaleX,
-                top: (bottom + pageHeight - cropRect[3]) * scaleY,
-                width: (cropRect[2] - cropRect[0]) * scaleX,
-                height: (cropRect[3] - cropRect[1]) * scaleY,
-            };
-            const cropped = cropCanvas(rotatedCanvas, crop);
-            canvases.add(cropped);
-            const croppedCanvas = rotateCanvas(cropped, page.rotate);
-            canvases.add(croppedCanvas);
-            return croppedCanvas.toDataURL(type, encoderOptions);
-        } finally {
-            for (const temporary of canvases) temporary.width = temporary.height = 0;
-        }
+    /** The resolution rectangle images have always been rendered at; also the upper bound for rectangle embeds. */
+    getMaxRectImageResolution() {
+        // Requiring too much resolution on mobile devices seems to cause the rendering to fail
+        return (Platform.isDesktop ? 7 : Platform.isTablet ? 4 : (window.devicePixelRatio || 1))
+            * (this.plugin.settings.rectEmbedResolution / 100);
     }
 
     /**
      * @param options Supports the same options as pdfPageToImageDataUrl.
      */
     async pdfPageToImageArrayBuffer(page: PDFPageProxy, options?: PDFPageToImageOptions): Promise<ArrayBuffer> {
-        const dataUrl = await this.pdfPageToImageDataUrl(page, options);
-        const base64 = dataUrl.match(/^data:image\/\w+;base64,(.*)/)?.[1];
-        if (!base64) throw new Error('Failed to convert data URL to base64');
-        return base64ToArrayBuffer(base64);
+        const blob = await this.pdfPageToImageBlob(page, options);
+        return await blob.arrayBuffer();
     }
 
     getOptionalRenderParameters(): OptionalRenderParameters {

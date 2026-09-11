@@ -154,6 +154,7 @@ test('viewer unload restores the native cancel method and cannot create a new la
 test('the actual annotationlayerrendered installer assigns all postprocessors to the native layer', async () => {
     imports['post-process'] = { ...processors, PDFExternalLinkPostProcessor };
     imports.bib = { BibliographyManager: class extends Component {} };
+    imports['page-release'] = { registerOffscreenPageRelease() {} };
     imports.utils.isEmbed = () => false;
     imports.utils.isNonEmbedLike = () => false;
     imports.obsidian.Platform = { isPhone: false };

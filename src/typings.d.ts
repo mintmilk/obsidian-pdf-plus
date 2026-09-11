@@ -171,6 +171,8 @@ interface PDFViewerChild {
     pdfPlusFileComponent?: Component;
     /** Owns the current annotation popup's Markdown children and handlers. */
     pdfPlusPopupComponent?: Component;
+    /** The scope's key handlers before Obsidian's `load` ran, to tell which ones it registered. */
+    pdfPlusScopeKeysBeforeLoad?: Set<KeymapEventHandler>;
     hoverPopover: HoverPopover | null;
     /** The color palette (and other PDF++-related UI elements) mounted on this PDF viewer. */
     palette: ColorPalette | null;
@@ -469,11 +471,19 @@ interface PDFViewer {
     scrollPageIntoView(params: { pageNumber: number, destArray?: [number, { name: string }, ...number[]] | null, allowNegativeOffset?: boolean, ignoreDestinationZoom?: boolean }): void;
     previousPage(): boolean;
     nextPage(): boolean;
+    /** Re-computes the visible pages and renders those that need it. */
+    update(): void;
+    /** The pages at least partially visible in the viewer container, most visible first. */
+    _getVisiblePages(): { first?: { id: number }, last?: { id: number }, views: { id: number, view: PDFPageView, percent: number }[], ids: Set<number> };
 }
 
 interface PDFPageView {
     /** 1-based page number */
     id: number;
+    /** PDF.js `RenderingStates`: 0 = INITIAL, 1 = RUNNING, 2 = PAUSED, 3 = FINISHED. */
+    renderingState: number;
+    /** Drops the rendered canvas and layers (what PDF.js does to pages evicted from its page cache). */
+    destroy(): void;
     pageLabel: string | null;
     pdfPage: PDFPageProxy;
     viewport: PageViewport;
@@ -611,6 +621,7 @@ interface PDFJsEventMap {
     annotationlayerrendered: { source: PDFPageView, pageNumber: number };
     pagesloaded: { source: PDFViewer, pagesCount: number };
     pagerendered: { source: PDFPageView, pageNumber: number, cssTransform: boolean, timestamp: number, error: any };
+    updateviewarea: { source: PDFViewer, location: PDFViewer['_location'] };
     pagechanging: { source: PDFViewer, pageNumber: number, pageLabel: string | null, previous: number };
     findbaropen: { source: PDFFindBar };
     findbarclose: { source: PDFFindBar };

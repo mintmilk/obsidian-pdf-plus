@@ -85,6 +85,12 @@ function createTab(saveSettings) {
     tab.component.load();
     tab.events = new Events();
     tab.promises = [Promise.resolve()];
+    tab.items = {};
+    tab.headings = new Map();
+    tab.iconHeadings = new Map();
+    tab.headerEls = new Map();
+    tab.contentEl = { emptied: 0, empty() { this.emptied++; } };
+    tab.headerContainerEl = { emptied: 0, empty() { this.emptied++; } };
     tab.plugin = {
         settings: {
             colors: {},
@@ -114,6 +120,8 @@ test('hide removes old clicks synchronously and cannot remove a redisplayed tab 
     try {
         oldHeader.dispatchEvent(new Event('click'));
         assert.equal(oldClicks, 0, 'old listeners must be removed before saveSettings settles');
+        assert.equal(tab.contentEl.emptied, 1, 'the hidden page must not be kept until the next display');
+        assert.equal(tab.headerContainerEl.emptied, 1);
         assert.equal(tab.component._loaded, false);
         assert.equal(tab.promises.length, 0);
 

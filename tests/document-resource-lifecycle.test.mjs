@@ -121,26 +121,69 @@ test('an aborted rendering cancels the render task and releases its canvas', asy
 });
 
 for (const fail of [false, true]) {
-    test(`encoding ${fail ? 'failure' : 'success'} releases every intermediate canvas, including rotations`, async () => {
+    test(`encoding ${fail ? 'failure' : 'success'} releases the rendered canvas, and crops by rendering only the region`, async () => {
         const allocated = [];
         const make = () => { const result = canvas(); result.width = result.height = 100; allocated.push(result); return result; };
-        const lib = helpers({ utils: {
-            rotateCanvas: () => make(),
-            cropCanvas: () => make(),
-        } });
-        lib.renderPDFPageToCanvas = async () => {
+        const lib = helpers();
+        const calls = [];
+        lib.renderPDFPageToCanvas = async (...args) => {
+            calls.push(args);
             const result = make();
-            if (fail) {
-                for (const item of allocated) item.toDataURL = () => { throw Error('encoding failed'); };
-            }
+            if (fail) result.toDataURL = () => { throw Error('encoding failed'); };
             return result;
         };
+        const page = { view: [0, 0, 100, 100], rotate: 90 };
         if (fail) {
-            // Fail without cropping to exercise the base-canvas finally path.
-            await assert.rejects(lib.pdfPageToImageDataUrl({ view: [0, 0, 100, 100], rotate: 90 }));
+            await assert.rejects(lib.pdfPageToImageDataUrl(page, { cropRect: [1, 1, 2, 2] }));
         } else {
-            assert.equal(await lib.pdfPageToImageDataUrl({ view: [0, 0, 100, 100], rotate: 90 }, { cropRect: [1, 1, 2, 2] }), 'data:image/png;base64,AA==');
+            assert.equal(await lib.pdfPageToImageDataUrl(page, { cropRect: [1, 1, 2, 2] }), 'data:image/png;base64,AA==');
         }
+        assert.equal(allocated.length, 1, 'no intermediate full-page, rotated or cropped copies');
+        assert.deepEqual(calls[0][4], [1, 1, 2, 2]);
+        assert.equal(calls[0][1], 7, 'the default resolution is unchanged for exported images');
         assert.ok(allocated.every(item => item.width * item.height === 0));
+    });
+}
+
+function regionPage(rendered) {
+    // A 600x800 page rotated by 90 degrees: viewport is 800x600, and PDF (x, y) maps to viewport (y, x).
+    return {
+        getViewport: () => ({ width: 800, height: 600, convertToViewportRectangle: ([x1, y1, x2, y2]) => [y1, x1, y2, x2] }),
+        render: (params) => { rendered.push(params); return { promise: Promise.resolve() }; },
+    };
+}
+
+test('rendering a crop rectangle allocates only the rectangle and shifts it to the origin', async () => {
+    const target = canvas();
+    const rendered = [];
+    const lib = helpers({ createEl: () => target });
+    const result = await lib.renderPDFPageToCanvas(regionPage(rendered), 3, {}, undefined, [100, 200, 300, 250]);
+    assert.equal(result, target);
+    // Rotated: the rectangle is 50 wide and 200 tall in viewport units, at (200, 100).
+    assert.equal(target.width, 150);
+    assert.equal(target.height, 600);
+    assert.deepEqual(Array.from(rendered[0].transform, v => v + 0), [3, 0, 0, 3, -600, -300]);
+});
+
+test('without a crop rectangle the whole page is rendered as before', async () => {
+    const target = canvas();
+    const rendered = [];
+    const lib = helpers({ createEl: () => target });
+    await lib.renderPDFPageToCanvas(regionPage(rendered), 2);
+    assert.equal(target.width, 1600);
+    assert.equal(target.height, 1200);
+    assert.deepEqual(Array.from(rendered[0].transform, v => v + 0), [2, 0, 0, 2, 0, 0]);
+});
+
+for (const fail of [false, true]) {
+    test(`blob encoding ${fail ? 'failure' : 'success'} releases the rendered canvas`, async () => {
+        const target = canvas();
+        target.width = target.height = 100;
+        target.toBlob = (callback, type) => callback(fail ? null : { type });
+        const lib = helpers();
+        lib.renderPDFPageToCanvas = async () => target;
+        if (fail) await assert.rejects(lib.pdfPageToImageBlob({}, { cropRect: [0, 0, 1, 1] }));
+        else assert.deepEqual(await lib.pdfPageToImageBlob({}, { type: 'image/webp', cropRect: [0, 0, 1, 1] }), { type: 'image/webp' });
+        assert.equal(target.width * target.height, 0);
     });
 }

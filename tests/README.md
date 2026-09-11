@@ -90,6 +90,18 @@ The broader lifecycle audit also covers:
 - Clipboard matching retains SHA-256 fingerprints instead of complete copied
   strings, including Base64 image embeds. Immediate and historical paste, line
   ending normalization, hashing failures and out-of-order completion are covered.
+- Off-screen page release keeps the visible pages, their neighbours (two in spread
+  modes, which PDF.js pre-renders), pages still rendering and pages holding the
+  selection; hidden viewers are released only after the delay and re-rendered
+  once when shown, and the manager never queues callbacks on loading viewers.
+- Rectangle rendering allocates only the rectangle (rotated pages included) and
+  keeps the export resolution. Rectangle embeds share one document per file and
+  version, destroy it on failure, abort or plugin unload, clean up each page after
+  rendering, revoke object URLs on replacement, unload and late completion, choose
+  the display resolution within the old cap and a pixel budget, and re-render only
+  when noticeably wider.
+- Viewer unload removes only the Escape handler registered during its own load.
+  The settings tab empties its page on hide.
 
 Some tests use real garbage collection in a subprocess in addition to resource
 counts. Keep Component doubles aligned with Obsidian's native unload order:

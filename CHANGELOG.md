@@ -10,6 +10,15 @@ First Community Edition release. Based on upstream `0.40.31`.
 
 ### Added
 
+- **Release off-screen PDF pages** (on by default, under Viewer options). PDF.js keeps the
+  rendered canvases of the last ten pages of every viewer — whether they are still on screen,
+  and whether the viewer is shown at all or sits in a background tab. They are GPU surfaces:
+  at a zoom of 1.2–1.4 on a 2x display, 20–27 MiB per page. With two PDF tabs and two pop-out
+  windows open they held about 850 MiB, and the GPU process 1.19 GiB. Pages more than one page
+  away from the visible ones are now released once scrolling settles, and all pages of a
+  viewer hidden for 60 seconds; PDF.js renders them again when they come back into view, as it
+  does with pages it evicts itself. Same layout, once settled: GPU process 1189 → 526 MiB.
+
 - **Lay the text layer out with the PDF's own fonts** (off by default, under Misc). The
   invisible text layer you select is laid out with a generic family — `getTextContent`
   reports `styles[fontName].fontFamily` as `font.fallbackName` — and only each item's total
@@ -43,6 +52,22 @@ First Community Edition release. Based on upstream `0.40.31`.
   it.
 
 ### Fixed
+
+- Rectangle embeds render only their rectangle, at the resolution they are displayed at
+  (never more than before), instead of the whole page at 7x: an A4 page alone was a ~90 MiB
+  canvas, copied once more by a no-op 360° rotation before cropping, and the resulting image was
+  kept as a base64 data URL several times wider than shown. Embeds of the same PDF now share
+  one document instead of one worker and one copy of the file each, release each page's
+  decoded images after rendering, render again only when the note gets noticeably wider or
+  the theme adaptation actually changes, and use object URLs. For a note with 13 rectangle
+  embeds (renderer + GPU): peak 2339 → 1171 MiB, 30 s after opening 666 → 299 MiB, and
+  back to the level before opening once the note is closed (526 → 242 MiB).
+  Exported rectangle images keep their resolution; only their rendering is cheaper.
+- A closed PDF view kept alive from outside (a native context menu's callback did this)
+  no longer keeps its PDF: Obsidian's Escape handler on the view's scope, whose closure
+  holds the viewer and document, is removed when the viewer unloads.
+- The settings tab releases its page (about 3000 elements) when it is closed rather than
+  keeping it until it is opened again.
 
 - Rapid PDF scrolling now releases internal/external link handlers and annotation
   hover components when PDF.js discards their annotation layer, instead of keeping

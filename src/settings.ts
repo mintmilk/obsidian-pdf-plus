@@ -309,6 +309,9 @@ export interface PDFPlusSettings {
 	autoCheckForUpdates: boolean;
 	fixObsidianTextSelectionBug: boolean;
 	useEmbeddedFontsInTextLayer: boolean;
+	releaseOffscreenPDFPages: boolean;
+	offscreenPDFPageMargin: number;
+	releaseHiddenPDFPagesAfterSec: number;
 }
 
 export const DEFAULT_SETTINGS: PDFPlusSettings = {
@@ -597,6 +600,9 @@ export const DEFAULT_SETTINGS: PDFPlusSettings = {
 	autoCheckForUpdates: true,
 	fixObsidianTextSelectionBug: true,
 	useEmbeddedFontsInTextLayer: false,
+	releaseOffscreenPDFPages: true,
+	offscreenPDFPageMargin: 1,
+	releaseHiddenPDFPagesAfterSec: 60,
 };
 
 
@@ -1589,6 +1595,16 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 		});
 	}
 
+	/** Drop the rendered settings page and the references into it. */
+	private releaseRenderedSettings() {
+		this.items = {};
+		this.headings.clear();
+		this.iconHeadings.clear();
+		this.headerEls.clear();
+		this.headerContainerEl.empty();
+		this.contentEl.empty();
+	}
+
 	/** Refresh the setting tab and then scroll back to the original position. */
 	redisplay() {
 		if ((this.component as Component & { _loaded?: boolean })._loaded === false) return;
@@ -1612,12 +1628,7 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 		// redisplay() does not call hide(); release the previous rendering's listeners first.
 		this.component.unload();
 		this.component = new Component();
-		this.items = {};
-		this.headings.clear();
-		this.iconHeadings.clear();
-		this.headerEls.clear();
-		this.headerContainerEl.empty();
-		this.contentEl.empty();
+		this.releaseRenderedSettings();
 		this.promises = [];
 		this.component.load();
 
@@ -1988,6 +1999,21 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 				el.appendChild(this.createLinkToHeading('vim', 'Vim keybindings'));
 				el.appendText('.');
 			}));
+		this.addToggleSetting('releaseOffscreenPDFPages', () => this.events.trigger('update'))
+			.setName('Release off-screen pages to save memory')
+			.setDesc('PDF.js keeps the images of the last ten pages rendered in every PDF viewer, even when they are far off screen or the viewer is in a background tab. At a high zoom level on a high-resolution display, each of them can take 20-30 MB of GPU memory. When enabled, pages away from the ones you are looking at are released once scrolling stops, and are rendered again when they come back into view.');
+		this.showConditionally(
+			this.addSliderSetting('offscreenPDFPageMargin', 1, 9, 1)
+				.setName('Pages to keep before and after the visible ones')
+				.setDesc('Larger values make scrolling back and forth smoother at the cost of memory.'),
+			() => this.plugin.settings.releaseOffscreenPDFPages
+		);
+		this.showConditionally(
+			this.addSliderSetting('releaseHiddenPDFPagesAfterSec', 0, 600, 10)
+				.setName('Release all pages of hidden PDF viewers after (seconds)')
+				.setDesc('Applies to PDFs in background tabs or collapsed sidebars. Set to 0 to keep them.'),
+			() => this.plugin.settings.releaseOffscreenPDFPages
+		);
 
 		this.addHeading('Context menu in PDF viewer', 'context-menu', 'lucide-mouse-pointer-click')
 			.setDesc('(Desktop & tablet only) Customize the behavior of the context menu that pops up when you right-click in the PDF viewer. For mobile users, see also the next section.');
@@ -3460,6 +3486,8 @@ export class PDFPlusSettingTab extends PluginSettingTab {
 		// never unload the listeners or clear the promises belonging to that new display.
 		this.promises = [];
 		this.component.unload();
+		// display() rebuilds everything, so the hidden page (~3000 nodes) need not be kept until then.
+		this.releaseRenderedSettings();
 
 		await this.plugin.saveSettings();
 

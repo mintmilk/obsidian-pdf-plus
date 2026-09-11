@@ -30,6 +30,7 @@ async function fixture(){
     imports['lib/component']=await source('../src/lib/component.ts',imports);
     imports.bib={BibliographyManager:class extends Component{}};
     imports['vim/vim']={VimBindings:{register(){}}};
+    imports['page-release']={registerOffscreenPageRelease(){}};
     const lib=await source('../src/lib/index.ts',imports);
     const patchers=await source('../src/patchers/pdf-internals.ts',imports,'\nexport {patchPDFViewerChild, patchPDFViewerComponent};');
     const {patchPDFViewerChild}=patchers;
@@ -117,4 +118,22 @@ test('reloading external PDFs revokes each obsolete blob before the viewer close
         assert.equal(f.imports.revoked.length,i,'old external document URL survived a file reload');
     }}finally{f.child.unload();f.plugin.unload();}
     assert.equal(f.imports.revoked.length,8);
+});
+test('unloading a viewer removes the Escape handler Obsidian registered in load, and nothing else',async()=>{
+    const f=await fixture();
+    const scope={keys:[],register(modifiers,key,func){const h={scope:this,modifiers:modifiers.join(','),key,func};this.keys.push(h);return h;},unregister(h){const i=this.keys.indexOf(h);if(i>=0)this.keys.splice(i,1);}};
+    const viewEscape=scope.register([],'Escape',()=>{});
+    const arrow=scope.register([],'ArrowLeft',()=>{});
+    f.child.scope=scope;
+    // What the patched load records before Obsidian's load registers its handlers.
+    f.child.pdfPlusScopeKeysBeforeLoad=new Set(scope.keys);
+    const nativeEscape=scope.register([],'Escape',()=>{});
+    const modEscape=scope.register(['Mod'],'Escape',()=>{});
+    const pageUp=scope.register([],'PageUp',()=>{});
+    f.child.unload();
+    try{
+        assert.ok(!scope.keys.includes(nativeEscape),'the closed viewer\'s Escape handler still holds it');
+        assert.deepEqual(scope.keys,[viewEscape,arrow,modEscape,pageUp]);
+        assert.equal(f.child.pdfPlusScopeKeysBeforeLoad,undefined);
+    }finally{f.plugin.unload();}
 });

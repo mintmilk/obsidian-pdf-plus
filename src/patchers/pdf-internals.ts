@@ -12,6 +12,7 @@ import { PDFViewerBacklinkVisualizer } from 'backlink-visualizer';
 import { PDFPlusToolbar } from 'toolbar';
 import { BibliographyManager } from 'bib';
 import { alignTextLayer } from 'text-layer-fonts';
+import { registerOffscreenPageRelease } from 'page-release';
 import { camelCaseToKebabCase, getCharactersWithBoundingBoxesInPDFCoords, getTextLayerInfo, hookInternalLinkMouseEventHandlers, isEmbed, isModifierName, isNonEmbedLike, selectDoubleClickedWord, selectTrippleClickedTextLayerNode, showChildElOnParentElHover } from 'utils';
 import { AnnotationElement, PDFOutlineViewer, PDFViewerComponent, PDFViewerChild, PDFSearchSettings, Rect, PDFAnnotationHighlight, PDFTextHighlight, PDFRectHighlight, ObsidianViewer, PDFPageView } from 'typings';
 import { SidebarView, SpreadMode } from 'pdfjs-enums';
@@ -172,6 +173,23 @@ const getPDFViewerChildComponent = (plugin: PDFPlus, child: PDFViewerChild): Com
     return child.component;
 };
 
+/**
+ * Obsidian's `PDFViewerChild.load` registers an Escape handler (clear the ephemeral UI, close the find bar) on the
+ * scope it shares with its view, and its `unload` never removes it. The handler's closure holds the child and its
+ * PDF.js viewer, and through them the document. That is harmless while the closed view itself is garbage, but a
+ * closed view can be kept alive from outside: a heap snapshot of the formal app found one held by a native context
+ * menu's callback in @electron/remote, keeping the closed PDF along with it.
+ */
+function releaseNativeScopeHandlers(child: PDFViewerChild) {
+    const before = child.pdfPlusScopeKeysBeforeLoad;
+    child.pdfPlusScopeKeysBeforeLoad = undefined;
+    const scope = child.scope;
+    if (!before || !scope?.keys) return;
+    for (const handler of [...scope.keys]) {
+        if (!before.has(handler) && handler.key === 'Escape' && !handler.modifiers) scope.unregister(handler);
+    }
+}
+
 const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
     const { app, lib } = plugin;
 
@@ -189,6 +207,9 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                 component.load();
                 const isActive = () => this.component === component && !this.unloaded;
 
+                // Obsidian's load registers an Escape handler on the scope it shares with the view, and its
+                // unload never removes it; see `releaseNativeScopeHandlers`.
+                this.pdfPlusScopeKeysBeforeLoad = new Set(this.scope?.keys ?? []);
                 const ret = await old.call(this, ...args);
                 if (!isActive()) return ret;
 
@@ -377,7 +398,9 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                 const component = this.component;
                 this.component = undefined;
                 if (component) plugin.removeChild(component);
-                return old.call(this);
+                const ret = old.call(this);
+                releaseNativeScopeHandlers(this);
+                return ret;
             };
         },
         onResize(old) {
@@ -459,6 +482,8 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
 
                 const bib = this.bib = component.addChild(new BibliographyManager(plugin, this));
                 component.register(() => { if (this.bib === bib) this.bib = null; });
+
+                registerOffscreenPageRelease(plugin, this, component);
 
                 // Register post-processors
 
